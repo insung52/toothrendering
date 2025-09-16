@@ -18,7 +18,7 @@ RENDER_UNLIT = False  # semantic map (EEVEE)
 RENDER_MATT = True  # 매트 머티리얼 (EEVEE)
 RENDER_DEPTH = False  # 뎁스 맵 (EEVEE)
 RENDER_NORMAL = False  # 노멀 맵 (EEVEE)
-RENDER_CURVATURE = False  # 곡률 맵 (EEVEE)
+RENDER_CURVATURE = True  # 곡률 맵 (EEVEE)
 
 # Windows에서 별도 콘솔창 띄우기
 if sys.platform == "win32":
@@ -65,7 +65,12 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             bpy.data.materials.remove(block, do_unlink=True)
 
         # === 저장 경로 및 파일명 설정 ===
-        output_base = r"C:/Users/rapid/Downloads/data_part_1/output"
+        # 선택한 폴더(self.folder_path)의 상위 폴더 안에 output 폴더 생성
+        selected_root = os.path.normpath(self.folder_path)
+        selected_parent = os.path.dirname(selected_root)
+        if not selected_parent or selected_parent == selected_root:
+            selected_parent = selected_root
+        output_base = os.path.join(selected_parent, "output")
         lit_dir = os.path.join(output_base, "lit")
         unlit_dir = os.path.join(output_base, "unlit")
         matt_dir = os.path.join(output_base, "matt")
@@ -493,12 +498,19 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             geom = nodes_curv.new(type="ShaderNodeNewGeometry")
             geom.location = (-400, 0)
 
+            # 대비 강화를 위한 Power 노드 추가 (Pointiness^2.5)
+            power_curv = nodes_curv.new(type="ShaderNodeMath")
+            power_curv.location = (-300, 0)
+            power_curv.operation = "POWER"
+            power_curv.inputs[1].default_value = 2.9
+
             ramp = nodes_curv.new(type="ShaderNodeValToRGB")
             ramp.location = (-200, 0)
             # 기본 커브 설정 (메시 밀도에 따라 조절 필요)
             try:
-                ramp.color_ramp.elements[0].position = 0.3
-                ramp.color_ramp.elements[1].position = 0.7
+                # 더 강한 대비를 위해 구간을 좁힘
+                ramp.color_ramp.elements[0].position = 0.094
+                ramp.color_ramp.elements[1].position = 0.188
             except Exception:
                 pass
 
@@ -508,11 +520,13 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             out_curv = nodes_curv.new(type="ShaderNodeOutputMaterial")
             out_curv.location = (200, 0)
 
-            # 연결: Pointiness -> ColorRamp -> Emission -> Output
+            # 연결: Pointiness -> Power -> ColorRamp -> Emission -> Output
             try:
-                links_curv.new(geom.outputs["Pointiness"], ramp.inputs[0])
+                links_curv.new(geom.outputs["Pointiness"], power_curv.inputs[0])
+                links_curv.new(power_curv.outputs[0], ramp.inputs[0])
             except Exception:
-                links_curv.new(geom.outputs[6], ramp.inputs[0])
+                links_curv.new(geom.outputs[6], power_curv.inputs[0])
+                links_curv.new(power_curv.outputs[0], ramp.inputs[0])
             links_curv.new(ramp.outputs[0], emission.inputs[0])
             try:
                 links_curv.new(emission.outputs["Emission"], out_curv.inputs["Surface"])
