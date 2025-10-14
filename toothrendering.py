@@ -11,13 +11,17 @@ import time
 # 설정 변수
 MAX_CASES = 1  # 처리할 최대 케이스 수
 Reverses = False  # 폴더 순서 역순 여부
+Sequence = True # true : 카메라 각도를 연속으로, false : 기존 10개 카메라 각도 사용용 
+# top -> left -> bottom 3개의 기존 카메라 각도를 키프레임으로 사용
+# top -> left 15장, left -> bottom 15장, 총 30장의 이미지를 저장함.
+# 전체 사진들을 순서대로 이어서 보면 동영상처럼 카메라가 orbital 회전하는것처럼 구현해야함
 
 # 렌더링 타입별 활성화 설정
-RENDER_LIT = False  # 라이팅 머티리얼 (Cycles)
-RENDER_UNLIT = False  # semantic map (EEVEE)
+RENDER_LIT = True  # 라이팅 머티리얼 (Cycles)
+RENDER_UNLIT = True  # semantic map (EEVEE)
 RENDER_MATT = True  # 매트 머티리얼 (EEVEE)
-RENDER_DEPTH = False  # 뎁스 맵 (EEVEE)
-RENDER_NORMAL = False  # 노멀 맵 (EEVEE)
+RENDER_DEPTH = True  # 뎁스 맵 (EEVEE)
+RENDER_NORMAL = True  # 노멀 맵 (EEVEE)
 RENDER_CURVATURE = True  # 곡률 맵 (EEVEE)
 
 # Windows에서 별도 콘솔창 띄우기
