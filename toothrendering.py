@@ -111,23 +111,38 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         # === 카메라 포즈 정의 ===
         target = mathutils.Vector((0, 100, 0))
         distance = 100
-        camera_configs = [
-            ("front", mathutils.Vector((0, -1, 0))),
-            ("top", mathutils.Vector((0, -1, 1))),
-            ("bottom", mathutils.Vector((0, -1, -1))),
-            ("right", mathutils.Vector((1, -1, 0))),
-            ("left", mathutils.Vector((-1, -1, 0))),
-            ("front_top_right", mathutils.Vector((1, -1, 1))),
-            ("front_top_left", mathutils.Vector((-1, -1, 1))),
-            ("front_bottom_right", mathutils.Vector((1, -1, -1))),
-            ("front_bottom_left", mathutils.Vector((-1, -1, -1))),
-            ("front_slightly_up", mathutils.Vector((0, -1, 0.5))),
-        ]
-        camera_positions = []
-        for name, view_dir in camera_configs:
-            view_dir = view_dir.normalized()
-            cam_pos = target + view_dir * distance
-            camera_positions.append((name, cam_pos))
+        
+        if Sequence:
+            # Sequence 모드: top -> left -> bottom 3개 키포인트만 사용
+            sequence_keypoints = [
+                ("top", mathutils.Vector((0, -1, 1))),
+                ("left", mathutils.Vector((-1, -1, 0))),
+                ("bottom", mathutils.Vector((0, -1, -1))),
+            ]
+            camera_positions = []
+            for name, view_dir in sequence_keypoints:
+                view_dir = view_dir.normalized()
+                cam_pos = target + view_dir * distance
+                camera_positions.append((name, cam_pos))
+        else:
+            # 기존 모드: 10개 카메라 각도 사용
+            camera_configs = [
+                ("front", mathutils.Vector((0, -1, 0))),
+                ("top", mathutils.Vector((0, -1, 1))),
+                ("bottom", mathutils.Vector((0, -1, -1))),
+                ("right", mathutils.Vector((1, -1, 0))),
+                ("left", mathutils.Vector((-1, -1, 0))),
+                ("front_top_right", mathutils.Vector((1, -1, 1))),
+                ("front_top_left", mathutils.Vector((-1, -1, 1))),
+                ("front_bottom_right", mathutils.Vector((1, -1, -1))),
+                ("front_bottom_left", mathutils.Vector((-1, -1, -1))),
+                ("front_slightly_up", mathutils.Vector((0, -1, 0.5))),
+            ]
+            camera_positions = []
+            for name, view_dir in camera_configs:
+                view_dir = view_dir.normalized()
+                cam_pos = target + view_dir * distance
+                camera_positions.append((name, cam_pos))
 
         # === 잇몸 머티리얼 (AO 노드 적용) ===
         mat_gum = bpy.data.materials.get("Gingiva_mat") or bpy.data.materials.new(
@@ -616,373 +631,401 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 elif all(l > 0 for l in face_labels):
                     poly.material_index = 1
             file_prefix = f"{parent_folder}_{selected_folder}"
+            
             # 카메라 루프
-            total_views = len(camera_positions)
-            for i, (name, cam_pos) in enumerate(camera_positions):
-                # 카메라 생성
-                cam_data = bpy.data.cameras.new(name + "_cam")
-                cam_obj = bpy.data.objects.new(name + "_cam", cam_data)
-                bpy.context.collection.objects.link(cam_obj)
-                cam_obj.location = cam_pos
-                direction = target - cam_pos
-                rot_quat = direction.to_track_quat("-Z", "Y")
-                cam_obj.rotation_euler = rot_quat.to_euler()
-                bpy.context.scene.camera = cam_obj
-                cam_data.angle = math.radians(60)
-                # directional light 생성
-                light_data = bpy.data.lights.new(name + "_sun", type="SUN")
-                light_data.energy = 5
-                light_data.use_shadow = True
-                light_obj = bpy.data.objects.new(name + "_sun", light_data)
-                bpy.context.collection.objects.link(light_obj)
-                light_obj.parent = cam_obj
-
-                # 렌더링 카운터 초기화
-                render_count = 0
-
-                # === unlit 머티리얼 적용 (EEVEE) ===
-                if RENDER_UNLIT:
-                    # 컴포지터 비활성화 (일반 렌더링)
-                    scene.use_nodes = False
-
-                    bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
-                    mesh.materials[0] = mat_gum_unlit
-                    mesh.materials[1] = mat_tooth_unlit
-                    unlit_path = os.path.join(unlit_dir, f"{file_prefix}_{name}.png")
-                    bpy.context.scene.render.filepath = unlit_path
-                    bpy.ops.render.render(write_still=True)
-                    render_count += 1
-
-                # === matt 머티리얼 적용 (EEVEE - 기본 흰색) ===
-                if RENDER_MATT:
-                    # 컴포지터 비활성화 (일반 렌더링)
-                    scene.use_nodes = False
-
-                    bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
-                    # matt에서는 그림자 제거
-                    _saved_shadow = light_data.use_shadow
-                    light_data.use_shadow = False
-                    mesh.materials[0] = mat_gum_matt
-                    mesh.materials[1] = mat_tooth_matt
-                    matt_path = os.path.join(matt_dir, f"{file_prefix}_{name}.png")
-                    bpy.context.scene.render.filepath = matt_path
-                    bpy.ops.render.render(write_still=True)
-                    # 원래 그림자 설정 복구 (다음 렌더에 영향 방지)
-                    light_data.use_shadow = _saved_shadow
-                    render_count += 1
-
-                # === 라이팅 머티리얼 적용 (Cycles - GPU Path Tracing) ===
-                if RENDER_LIT:
-                    # 컴포지터 비활성화 (일반 렌더링)
-                    scene.use_nodes = False
-
-                    bpy.context.scene.render.engine = "CYCLES"
-                    # GPU 렌더링 설정이 이미 위에서 적용됨
-
-                    mesh.materials[0] = mat_gum
-                    mesh.materials[1] = mat_tooth
-                    lit_path = os.path.join(lit_dir, f"{file_prefix}_{name}.png")
-                    bpy.context.scene.render.filepath = lit_path
-                    bpy.ops.render.render(write_still=True)
-                    render_count += 1
-
-                # === depth 맵 (EEVEE + Z Pass Normalize, 스크린 공간 자동 정규화) ===
-                if RENDER_DEPTH:
-                    # 화면 기준(카메라 공간) 깊이 최소/최대 계산: 실제 메시 모든 정점 사용
-                    def compute_obj_depth_range_screen(obj_local, cam_local):
-                        cam_inv = cam_local.matrix_world.inverted()
-                        min_d, max_d = None, None
-                        for v in obj_local.data.vertices:
-                            world_co = obj_local.matrix_world @ v.co
-                            cam_co = cam_inv @ world_co
-                            depth_val = -cam_co.z  # 카메라가 -Z를 바라봄
-                            if min_d is None or depth_val < min_d:
-                                min_d = depth_val
-                            if max_d is None or depth_val > max_d:
-                                max_d = depth_val
-                        if min_d is None or max_d is None:
-                            return 0.0, 1.0
-                        min_d = max(min_d, 0.0)
-                        if max_d <= min_d:
-                            max_d = min_d + 1.0
-                        return float(min_d), float(max_d)
-
-                    near_d, far_d = compute_obj_depth_range_screen(obj, cam_obj)
-
-                    # 뷰에 맞춰 카메라 클리핑 범위를 메시 범위로 세팅 (배경 무한값 영향 최소화)
-                    depth_range = max(far_d - near_d, 1e-3)
-                    margin = max(0.01, depth_range * 0.05)
-                    cam_data.clip_start = max(0.001, near_d - margin)
-                    cam_data.clip_end = far_d + margin
-
-                    view_layer = bpy.context.view_layer
-                    try:
-                        view_layer.use_pass_z = True
-                    except Exception:
-                        pass
-
-                    # 컴포지터: Depth -> Normalize -> Composite (근=검정, 원=흰색)
-                    prev_use_nodes = scene.use_nodes
-                    scene.use_nodes = True
-                    ntree = scene.node_tree
-                    nodes = ntree.nodes
-                    links = ntree.links
-                    nodes.clear()
-                    rl = nodes.new(type="CompositorNodeRLayers")
-                    z_norm = nodes.new(type="CompositorNodeNormalize")
-                    comp = nodes.new(type="CompositorNodeComposite")
-                    links.new(rl.outputs["Depth"], z_norm.inputs[0])
-                    links.new(z_norm.outputs[0], comp.inputs["Image"])
-
-                    img_settings = scene.render.image_settings
-                    prev_format = img_settings.file_format
-                    prev_color_mode = img_settings.color_mode
-                    prev_color_depth = img_settings.color_depth
-                    prev_view_transform = scene.view_settings.view_transform
-
-                    img_settings.file_format = "PNG"
-                    img_settings.color_mode = "BW"
-                    img_settings.color_depth = "16"
-                    scene.view_settings.view_transform = "Standard"
-
-                    depth_path = os.path.join(depth_dir, f"{file_prefix}_{name}.png")
-                    bpy.context.scene.render.filepath = depth_path
-                    bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
-                    bpy.ops.render.render(write_still=True, use_viewport=False)
-
-                    # 복구
-                    img_settings.file_format = prev_format
-                    img_settings.color_mode = prev_color_mode
-                    img_settings.color_depth = prev_color_depth
-                    scene.view_settings.view_transform = prev_view_transform
-                    scene.use_nodes = prev_use_nodes
-
-                    render_count += 1
-
-                # === normal 맵 (EEVEE + Normal Pass) ===
-                if RENDER_NORMAL:
-                    # EEVEE 엔진으로 설정
-                    bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
-
-                    # 라이팅 효과 완전히 제거 (unlit처럼)
-                    _saved_shadow = light_data.use_shadow
-                    light_data.use_shadow = False
-                    _saved_energy = light_data.energy
-                    light_data.energy = 0.0  # 라이트 완전히 끔
-
-                    # 노멀 패스 활성화
-                    view_layer = bpy.context.view_layer
-                    try:
-                        view_layer.use_pass_normal = True
-                    except Exception:
-                        pass
-
-                    # 컴포지터: Normal -> Composite
-                    prev_use_nodes = scene.use_nodes
-                    scene.use_nodes = True
-                    ntree = scene.node_tree
-                    nodes = ntree.nodes
-                    links = ntree.links
-                    nodes.clear()
-
-                    # Render Layers 노드
-                    rl = nodes.new(type="CompositorNodeRLayers")
-
-                    # Math 노드들로 노멀을 0-1 범위로 변환 (더 안전한 방법)
-                    # X 채널 처리
-                    separate_xyz = nodes.new(type="CompositorNodeSeparateXYZ")
-                    separate_xyz.location = (200, 0)
-
-                    # X, Y, Z 각각을 0-1 범위로 변환 ([-1,1] -> [0,1])
-                    math_x = nodes.new(type="CompositorNodeMath")
-                    math_x.operation = "MULTIPLY_ADD"
-                    math_x.inputs[1].default_value = 0.5  # multiply by 0.5
-                    math_x.inputs[2].default_value = 0.5  # add 0.5
-                    math_x.location = (400, 100)
-
-                    math_y = nodes.new(type="CompositorNodeMath")
-                    math_y.operation = "MULTIPLY_ADD"
-                    math_y.inputs[1].default_value = 0.5
-                    math_y.inputs[2].default_value = 0.5
-                    math_y.location = (400, 0)
-
-                    math_z = nodes.new(type="CompositorNodeMath")
-                    math_z.operation = "MULTIPLY_ADD"
-                    math_z.inputs[1].default_value = 0.5
-                    math_z.inputs[2].default_value = 0.5
-                    math_z.location = (400, -100)
-
-                    # 다시 XYZ로 결합
-                    combine_xyz = nodes.new(type="CompositorNodeCombineXYZ")
-                    combine_xyz.location = (600, 0)
-
-                    # Composite 노드
-                    comp = nodes.new(type="CompositorNodeComposite")
-                    comp.location = (800, 0)
-
-                    # 노드 연결
-                    links.new(rl.outputs["Normal"], separate_xyz.inputs[0])
-                    links.new(separate_xyz.outputs["X"], math_x.inputs[0])
-                    links.new(separate_xyz.outputs["Y"], math_y.inputs[0])
-                    links.new(separate_xyz.outputs["Z"], math_z.inputs[0])
-                    links.new(math_x.outputs[0], combine_xyz.inputs["X"])
-                    links.new(math_y.outputs[0], combine_xyz.inputs["Y"])
-                    links.new(math_z.outputs[0], combine_xyz.inputs["Z"])
-                    links.new(combine_xyz.outputs[0], comp.inputs["Image"])
-
-                    # 이미지 설정
-                    img_settings = scene.render.image_settings
-                    prev_format = img_settings.file_format
-                    prev_color_mode = img_settings.color_mode
-                    prev_color_depth = img_settings.color_depth
-                    prev_view_transform = scene.view_settings.view_transform
-
-                    img_settings.file_format = "PNG"
-                    img_settings.color_mode = "RGB"
-                    img_settings.color_depth = "8"
-                    scene.view_settings.view_transform = "Standard"
-
-                    normal_path = os.path.join(normal_dir, f"{file_prefix}_{name}.png")
-                    bpy.context.scene.render.filepath = normal_path
-                    bpy.ops.render.render(write_still=True, use_viewport=False)
-
-                    # 설정 복구
-                    img_settings.file_format = prev_format
-                    img_settings.color_mode = prev_color_mode
-                    img_settings.color_depth = prev_color_depth
-                    scene.view_settings.view_transform = prev_view_transform
-                    scene.use_nodes = prev_use_nodes
-
-                    # 라이팅 설정 복구
-                    light_data.use_shadow = _saved_shadow
-                    light_data.energy = _saved_energy
-
-                    render_count += 1
-
-                # === curvature 맵 (Cycles + Geometry Pointiness) ===
-                if RENDER_CURVATURE:
-                    # 컴포지터 비활성화 (일반 렌더링)
-                    scene.use_nodes = False
-
-                    # Pointiness는 Cycles에서 동작
-                    bpy.context.scene.render.engine = "CYCLES"
-
-                    # 머티리얼 모두 커브처로 적용
-                    mesh.materials[0] = mat_curvature
-                    if len(mesh.materials) > 1:
-                        mesh.materials[1] = mat_curvature
-
-                    # 표준 보기 변환으로 저장 (색 왜곡 방지)
-                    prev_view_transform = scene.view_settings.view_transform
-                    scene.view_settings.view_transform = "Standard"
-
-                    curvature_path = os.path.join(
-                        curvature_dir, f"{file_prefix}_{name}.png"
-                    )
-                    bpy.context.scene.render.filepath = curvature_path
-                    bpy.ops.render.render(write_still=True)
-
-                    # 복구
-                    scene.view_settings.view_transform = prev_view_transform
-                    render_count += 1
-
-                # 진행률 및 시간 정보 출력 (활성화된 렌더링 타입 기준)
-                current_render = (
-                    (idx - 1)
-                    * total_views
-                    * active_render_types  # 이전 케이스까지 완료 수
-                    + i * active_render_types  # 현재 케이스의 이전 뷰 완료 수
-                    + render_count  # 현재 뷰에서 완료한 렌더 수
-                )
-                elapsed_time = time.time() - start_time
-                avg_time_per_render = elapsed_time / current_render
-                remaining_renders = total_renders - current_render
-                estimated_remaining_time = remaining_renders * avg_time_per_render
-
-                # 시간을 시:분:초 형식으로 변환
-                def format_time(seconds):
-                    hours = int(seconds // 3600)
-                    minutes = int((seconds % 3600) // 60)
-                    secs = int(seconds % 60)
-                    if hours > 0:
-                        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+            if Sequence:
+                # Sequence 모드: top->left->bottom 보간으로 30장 생성
+                total_sequence_frames = 30
+                frames_per_segment = 15  # top->left: 15장, left->bottom: 15장
+                
+                for frame_idx in range(total_sequence_frames):
+                    # 프레임 인덱스에 따라 보간 계산
+                    if frame_idx < frames_per_segment:
+                        # top -> left 보간 (0~14)
+                        t = frame_idx / (frames_per_segment - 1)
+                        start_pos = camera_positions[0][1]  # top
+                        end_pos = camera_positions[1][1]    # left
+                        cam_pos = start_pos.lerp(end_pos, t)
+                        view_name = f"seq_{frame_idx:02d}_top_to_left"
                     else:
-                        return f"{minutes:02d}:{secs:02d}"
-
-                print(
-                    f"  [{idx}/{total}] Model {idx} - View {i+1}/{total_views}: {name} | "
-                    f"Elapsed: {format_time(elapsed_time)} | ETA: {format_time(estimated_remaining_time)}\n"
-                )
-
-                # 마지막 반복이 아닌 경우에만 조명도 삭제
-                if i < len(camera_positions) - 1:
+                        # left -> bottom 보간 (15~29)
+                        t = (frame_idx - frames_per_segment) / (frames_per_segment - 1)
+                        start_pos = camera_positions[1][1]  # left
+                        end_pos = camera_positions[2][1]    # bottom
+                        cam_pos = start_pos.lerp(end_pos, t)
+                        view_name = f"seq_{frame_idx:02d}_left_to_bottom"
+                    
+                    # 카메라 생성 및 렌더링
+                    cam_data = bpy.data.cameras.new(view_name + "_cam")
+                    cam_obj = bpy.data.objects.new(view_name + "_cam", cam_data)
+                    bpy.context.collection.objects.link(cam_obj)
+                    cam_obj.location = cam_pos
+                    direction = target - cam_pos
+                    rot_quat = direction.to_track_quat("-Z", "Y")
+                    cam_obj.rotation_euler = rot_quat.to_euler()
+                    bpy.context.scene.camera = cam_obj
+                    cam_data.angle = math.radians(60)
+                    
+                    # directional light 생성
+                    light_data = bpy.data.lights.new(view_name + "_sun", type="SUN")
+                    light_data.energy = 5
+                    light_data.use_shadow = True
+                    light_obj = bpy.data.objects.new(view_name + "_sun", light_data)
+                    bpy.context.collection.objects.link(light_obj)
+                    light_obj.parent = cam_obj
+                    
+                    # 렌더링 카운터 초기화
+                    render_count = 0
+                    
+                    # 각 렌더링 타입별로 렌더링 (기존 로직 재사용)
+                    render_count = self._render_all_types(scene, mesh, mat_gum, mat_tooth, mat_gum_unlit, mat_tooth_unlit, 
+                                         mat_gum_matt, mat_tooth_matt, mat_curvature, file_prefix, 
+                                         view_name, lit_dir, unlit_dir, matt_dir, depth_dir, normal_dir, 
+                                         curvature_dir, light_data, cam_obj, obj)
+                    
+                    # 진행률 출력
+                    elapsed_time = time.time() - start_time
+                    avg_time_per_render = elapsed_time / (frame_idx + 1)
+                    remaining_frames = total_sequence_frames - (frame_idx + 1)
+                    estimated_remaining_time = remaining_frames * avg_time_per_render
+                    
+                    def format_time(seconds):
+                        hours = int(seconds // 3600)
+                        minutes = int((seconds % 3600) // 60)
+                        secs = int(seconds % 60)
+                        if hours > 0:
+                            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                        else:
+                            return f"{minutes:02d}:{secs:02d}"
+                    
+                    print(f"  [{idx}/{total}] Model {idx} - Frame {frame_idx+1}/{total_sequence_frames}: {view_name} | "
+                          f"Elapsed: {format_time(elapsed_time)} | ETA: {format_time(estimated_remaining_time)}")
+                    
+                    # 카메라와 라이트 정리
                     bpy.data.objects.remove(cam_obj, do_unlink=True)
                     bpy.data.objects.remove(light_obj, do_unlink=True)
-
-            # 케이스 완료 시간 출력
-            case_time = time.time() - case_start_time
-            print(f"  Case completed in {case_time:.1f}s")
-
-        total_time = time.time() - start_time
-
-        # 총 소요시간도 시:분:초 형식으로 표시
-        def format_time(seconds):
-            hours = int(seconds // 3600)
-            minutes = int((seconds % 3600) // 60)
-            secs = int(seconds % 60)
-            if hours > 0:
-                return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                    
             else:
-                return f"{minutes:02d}:{secs:02d}"
+                # 기존 모드: 10개 카메라 각도 사용
+                total_views = len(camera_positions)
+                for i, (name, cam_pos) in enumerate(camera_positions):
+                    # 카메라 생성
+                    cam_data = bpy.data.cameras.new(name + "_cam")
+                    cam_obj = bpy.data.objects.new(name + "_cam", cam_data)
+                    bpy.context.collection.objects.link(cam_obj)
+                    cam_obj.location = cam_pos
+                    direction = target - cam_pos
+                    rot_quat = direction.to_track_quat("-Z", "Y")
+                    cam_obj.rotation_euler = rot_quat.to_euler()
+                    bpy.context.scene.camera = cam_obj
+                    cam_data.angle = math.radians(60)
+                    # directional light 생성
+                    light_data = bpy.data.lights.new(name + "_sun", type="SUN")
+                    light_data.energy = 5
+                    light_data.use_shadow = True
+                    light_obj = bpy.data.objects.new(name + "_sun", light_data)
+                    bpy.context.collection.objects.link(light_obj)
+                    light_obj.parent = cam_obj
 
-        print(f"\n렌더링 완료! 총 소요시간: {format_time(total_time)}")
+                    # 렌더링 카운터 초기화
+                    render_count = 0
 
-        # 활성화된 렌더링 타입에 따른 완료 메시지 생성
-        completed_dirs = []
-        if RENDER_LIT:
-            completed_dirs.append("lit")
-        if RENDER_UNLIT:
-            completed_dirs.append("unlit")
-        if RENDER_MATT:
-            completed_dirs.append("matt")
-        if RENDER_DEPTH:
-            completed_dirs.append("depth")
-        if RENDER_NORMAL:
-            completed_dirs.append("normal")
-        if RENDER_CURVATURE:
-            completed_dirs.append("curvature")
+                    # 각 렌더링 타입별로 렌더링
+                    render_count = self._render_all_types(scene, mesh, mat_gum, mat_tooth, mat_gum_unlit, mat_tooth_unlit, 
+                                         mat_gum_matt, mat_tooth_matt, mat_curvature, file_prefix, 
+                                         name, lit_dir, unlit_dir, matt_dir, depth_dir, normal_dir, 
+                                         curvature_dir, light_data, cam_obj, obj)
 
-        self.report(
-            {"INFO"},
-            f"모든 케이스 이미지 저장 완료: {', '.join(completed_dirs)}",
-        )
+                    # 진행률 및 시간 정보 출력 (활성화된 렌더링 타입 기준)
+                    current_render = (
+                        (idx - 1)
+                        * total_views
+                        * active_render_types  # 이전 케이스까지 완료 수
+                        + i * active_render_types  # 현재 케이스의 이전 뷰 완료 수
+                        + render_count  # 현재 뷰에서 완료한 렌더 수
+                    )
+                    elapsed_time = time.time() - start_time
+                    avg_time_per_render = elapsed_time / current_render
+                    remaining_renders = total_renders - current_render
+                    estimated_remaining_time = remaining_renders * avg_time_per_render
 
-        # 파일 탐색기 열기 (첫 번째 활성화된 폴더 기준)
-        first_active_dir = None
-        if RENDER_LIT:
-            first_active_dir = lit_dir
-        elif RENDER_UNLIT:
-            first_active_dir = unlit_dir
-        elif RENDER_MATT:
-            first_active_dir = matt_dir
-        elif RENDER_DEPTH:
-            first_active_dir = depth_dir
-        elif RENDER_NORMAL:
-            first_active_dir = normal_dir
-        elif RENDER_CURVATURE:
-            first_active_dir = curvature_dir
-        else:
-            first_active_dir = output_base  # 기본 출력 폴더
+                    # 시간을 시:분:초 형식으로 변환
+                    def format_time(seconds):
+                        hours = int(seconds // 3600)
+                        minutes = int((seconds % 3600) // 60)
+                        secs = int(seconds % 60)
+                        if hours > 0:
+                            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+                        else:
+                            return f"{minutes:02d}:{secs:02d}"
 
-        if first_active_dir and os.path.exists(first_active_dir):
-            if sys.platform == "win32":
-                os.startfile(first_active_dir)
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", first_active_dir])
-            else:
-                subprocess.Popen(["xdg-open", first_active_dir])
+                    print(
+                        f"  [{idx}/{total}] Model {idx} - View {i+1}/{total_views}: {name} | "
+                        f"Elapsed: {format_time(elapsed_time)} | ETA: {format_time(estimated_remaining_time)}\n"
+                    )
+
+                    # 마지막 반복이 아닌 경우에만 조명도 삭제
+                    if i < len(camera_positions) - 1:
+                        bpy.data.objects.remove(cam_obj, do_unlink=True)
+                        bpy.data.objects.remove(light_obj, do_unlink=True)
 
         return {"FINISHED"}
+
+    def _render_all_types(self, scene, mesh, mat_gum, mat_tooth, mat_gum_unlit, mat_tooth_unlit, 
+                         mat_gum_matt, mat_tooth_matt, mat_curvature, file_prefix, 
+                         view_name, lit_dir, unlit_dir, matt_dir, depth_dir, normal_dir, 
+                         curvature_dir, light_data, cam_obj, obj):
+        """모든 렌더링 타입을 순차적으로 실행"""
+        render_count = 0
+        
+        # === unlit 머티리얼 적용 (EEVEE) ===
+        if RENDER_UNLIT:
+            # 컴포지터 비활성화 (일반 렌더링)
+            scene.use_nodes = False
+
+            bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
+            mesh.materials[0] = mat_gum_unlit
+            mesh.materials[1] = mat_tooth_unlit
+            unlit_path = os.path.join(unlit_dir, f"{file_prefix}_{view_name}.png")
+            bpy.context.scene.render.filepath = unlit_path
+            bpy.ops.render.render(write_still=True)
+            render_count += 1
+
+        # === matt 머티리얼 적용 (EEVEE - 기본 흰색) ===
+        if RENDER_MATT:
+            # 컴포지터 비활성화 (일반 렌더링)
+            scene.use_nodes = False
+
+            bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
+            # matt에서는 그림자 제거
+            _saved_shadow = light_data.use_shadow
+            light_data.use_shadow = False
+            mesh.materials[0] = mat_gum_matt
+            mesh.materials[1] = mat_tooth_matt
+            matt_path = os.path.join(matt_dir, f"{file_prefix}_{view_name}.png")
+            bpy.context.scene.render.filepath = matt_path
+            bpy.ops.render.render(write_still=True)
+            # 원래 그림자 설정 복구 (다음 렌더에 영향 방지)
+            light_data.use_shadow = _saved_shadow
+            render_count += 1
+
+        # === 라이팅 머티리얼 적용 (Cycles - GPU Path Tracing) ===
+        if RENDER_LIT:
+            # 컴포지터 비활성화 (일반 렌더링)
+            scene.use_nodes = False
+
+            bpy.context.scene.render.engine = "CYCLES"
+            # GPU 렌더링 설정이 이미 위에서 적용됨
+
+            mesh.materials[0] = mat_gum
+            mesh.materials[1] = mat_tooth
+            lit_path = os.path.join(lit_dir, f"{file_prefix}_{view_name}.png")
+            bpy.context.scene.render.filepath = lit_path
+            bpy.ops.render.render(write_still=True)
+            render_count += 1
+
+        # === depth 맵 (EEVEE + Z Pass Normalize, 스크린 공간 자동 정규화) ===
+        if RENDER_DEPTH:
+            # 화면 기준(카메라 공간) 깊이 최소/최대 계산: 실제 메시 모든 정점 사용
+            def compute_obj_depth_range_screen(obj_local, cam_local):
+                cam_inv = cam_local.matrix_world.inverted()
+                min_d, max_d = None, None
+                for v in obj_local.data.vertices:
+                    world_co = obj_local.matrix_world @ v.co
+                    cam_co = cam_inv @ world_co
+                    depth_val = -cam_co.z  # 카메라가 -Z를 바라봄
+                    if min_d is None or depth_val < min_d:
+                        min_d = depth_val
+                    if max_d is None or depth_val > max_d:
+                        max_d = depth_val
+                if min_d is None or max_d is None:
+                    return 0.0, 1.0
+                min_d = max(min_d, 0.0)
+                if max_d <= min_d:
+                    max_d = min_d + 1.0
+                return float(min_d), float(max_d)
+
+            near_d, far_d = compute_obj_depth_range_screen(obj, cam_obj)
+
+            # 뷰에 맞춰 카메라 클리핑 범위를 메시 범위로 세팅 (배경 무한값 영향 최소화)
+            depth_range = max(far_d - near_d, 1e-3)
+            margin = max(0.01, depth_range * 0.05)
+            cam_data = cam_obj.data
+            cam_data.clip_start = max(0.001, near_d - margin)
+            cam_data.clip_end = far_d + margin
+
+            view_layer = bpy.context.view_layer
+            try:
+                view_layer.use_pass_z = True
+            except Exception:
+                pass
+
+            # 컴포지터: Depth -> Normalize -> Composite (근=검정, 원=흰색)
+            prev_use_nodes = scene.use_nodes
+            scene.use_nodes = True
+            ntree = scene.node_tree
+            nodes = ntree.nodes
+            links = ntree.links
+            nodes.clear()
+            rl = nodes.new(type="CompositorNodeRLayers")
+            z_norm = nodes.new(type="CompositorNodeNormalize")
+            comp = nodes.new(type="CompositorNodeComposite")
+            links.new(rl.outputs["Depth"], z_norm.inputs[0])
+            links.new(z_norm.outputs[0], comp.inputs["Image"])
+
+            img_settings = scene.render.image_settings
+            prev_format = img_settings.file_format
+            prev_color_mode = img_settings.color_mode
+            prev_color_depth = img_settings.color_depth
+            prev_view_transform = scene.view_settings.view_transform
+
+            img_settings.file_format = "PNG"
+            img_settings.color_mode = "BW"
+            img_settings.color_depth = "16"
+            scene.view_settings.view_transform = "Standard"
+
+            depth_path = os.path.join(depth_dir, f"{file_prefix}_{view_name}.png")
+            bpy.context.scene.render.filepath = depth_path
+            bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
+            bpy.ops.render.render(write_still=True, use_viewport=False)
+
+            # 복구
+            img_settings.file_format = prev_format
+            img_settings.color_mode = prev_color_mode
+            img_settings.color_depth = prev_color_depth
+            scene.view_settings.view_transform = prev_view_transform
+            scene.use_nodes = prev_use_nodes
+
+            render_count += 1
+
+        # === normal 맵 (EEVEE + Normal Pass) ===
+        if RENDER_NORMAL:
+            # EEVEE 엔진으로 설정
+            bpy.context.scene.render.engine = "BLENDER_EEVEE_NEXT"
+
+            # 라이팅 효과 완전히 제거 (unlit처럼)
+            _saved_shadow = light_data.use_shadow
+            light_data.use_shadow = False
+            _saved_energy = light_data.energy
+            light_data.energy = 0.0  # 라이트 완전히 끔
+
+            # 노멀 패스 활성화
+            view_layer = bpy.context.view_layer
+            try:
+                view_layer.use_pass_normal = True
+            except Exception:
+                pass
+
+            # 컴포지터: Normal -> Composite
+            prev_use_nodes = scene.use_nodes
+            scene.use_nodes = True
+            ntree = scene.node_tree
+            nodes = ntree.nodes
+            links = ntree.links
+            nodes.clear()
+
+            # Render Layers 노드
+            rl = nodes.new(type="CompositorNodeRLayers")
+
+            # Math 노드들로 노멀을 0-1 범위로 변환 (더 안전한 방법)
+            # X 채널 처리
+            separate_xyz = nodes.new(type="CompositorNodeSeparateXYZ")
+            separate_xyz.location = (200, 0)
+
+            # X, Y, Z 각각을 0-1 범위로 변환 ([-1,1] -> [0,1])
+            math_x = nodes.new(type="CompositorNodeMath")
+            math_x.operation = "MULTIPLY_ADD"
+            math_x.inputs[1].default_value = 0.5  # multiply by 0.5
+            math_x.inputs[2].default_value = 0.5  # add 0.5
+            math_x.location = (400, 100)
+
+            math_y = nodes.new(type="CompositorNodeMath")
+            math_y.operation = "MULTIPLY_ADD"
+            math_y.inputs[1].default_value = 0.5
+            math_y.inputs[2].default_value = 0.5
+            math_y.location = (400, 0)
+
+            math_z = nodes.new(type="CompositorNodeMath")
+            math_z.operation = "MULTIPLY_ADD"
+            math_z.inputs[1].default_value = 0.5
+            math_z.inputs[2].default_value = 0.5
+            math_z.location = (400, -100)
+
+            # 다시 XYZ로 결합
+            combine_xyz = nodes.new(type="CompositorNodeCombineXYZ")
+            combine_xyz.location = (600, 0)
+
+            # Composite 노드
+            comp = nodes.new(type="CompositorNodeComposite")
+            comp.location = (800, 0)
+
+            # 노드 연결
+            links.new(rl.outputs["Normal"], separate_xyz.inputs[0])
+            links.new(separate_xyz.outputs["X"], math_x.inputs[0])
+            links.new(separate_xyz.outputs["Y"], math_y.inputs[0])
+            links.new(separate_xyz.outputs["Z"], math_z.inputs[0])
+            links.new(math_x.outputs[0], combine_xyz.inputs["X"])
+            links.new(math_y.outputs[0], combine_xyz.inputs["Y"])
+            links.new(math_z.outputs[0], combine_xyz.inputs["Z"])
+            links.new(combine_xyz.outputs[0], comp.inputs["Image"])
+
+            # 이미지 설정
+            img_settings = scene.render.image_settings
+            prev_format = img_settings.file_format
+            prev_color_mode = img_settings.color_mode
+            prev_color_depth = img_settings.color_depth
+            prev_view_transform = scene.view_settings.view_transform
+
+            img_settings.file_format = "PNG"
+            img_settings.color_mode = "RGB"
+            img_settings.color_depth = "8"
+            scene.view_settings.view_transform = "Standard"
+
+            normal_path = os.path.join(normal_dir, f"{file_prefix}_{view_name}.png")
+            bpy.context.scene.render.filepath = normal_path
+            bpy.ops.render.render(write_still=True, use_viewport=False)
+
+            # 설정 복구
+            img_settings.file_format = prev_format
+            img_settings.color_mode = prev_color_mode
+            img_settings.color_depth = prev_color_depth
+            scene.view_settings.view_transform = prev_view_transform
+            scene.use_nodes = prev_use_nodes
+
+            # 라이팅 설정 복구
+            light_data.use_shadow = _saved_shadow
+            light_data.energy = _saved_energy
+
+            render_count += 1
+
+        # === curvature 맵 (Cycles + Geometry Pointiness) ===
+        if RENDER_CURVATURE:
+            # 컴포지터 비활성화 (일반 렌더링)
+            scene.use_nodes = False
+
+            # Pointiness는 Cycles에서 동작
+            bpy.context.scene.render.engine = "CYCLES"
+
+            # 머티리얼 모두 커브처로 적용
+            mesh.materials[0] = mat_curvature
+            if len(mesh.materials) > 1:
+                mesh.materials[1] = mat_curvature
+
+            # 표준 보기 변환으로 저장 (색 왜곡 방지)
+            prev_view_transform = scene.view_settings.view_transform
+            scene.view_settings.view_transform = "Standard"
+
+            curvature_path = os.path.join(
+                curvature_dir, f"{file_prefix}_{view_name}.png"
+            )
+            bpy.context.scene.render.filepath = curvature_path
+            bpy.ops.render.render(write_still=True)
+
+            # 복구
+            scene.view_settings.view_transform = prev_view_transform
+            render_count += 1
+
+        return render_count
 
     def invoke(self, context, event):
         wm = context.window_manager
