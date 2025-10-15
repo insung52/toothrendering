@@ -9,7 +9,8 @@ import time
 
 
 # 설정 변수
-MAX_CASES = 1  # 처리할 최대 케이스 수
+MAX_CASES = 50  # 처리할 최대 케이스 수
+START_CASE = 45  # 시작 케이스 번호 (1부터 시작)
 Reverses = False  # 폴더 순서 역순 여부
 Sequence = True # true : 카메라 각도를 연속으로, false : 기존 10개 카메라 각도 사용용 
 # top -> left -> bottom 3개의 기존 카메라 각도를 키프레임으로 사용
@@ -18,11 +19,11 @@ Sequence = True # true : 카메라 각도를 연속으로, false : 기존 10개 
 
 # 렌더링 타입별 활성화 설정
 RENDER_LIT = True  # 라이팅 머티리얼 (Cycles)
-RENDER_UNLIT = True  # semantic map (EEVEE)
-RENDER_MATT = True  # 매트 머티리얼 (EEVEE)
-RENDER_DEPTH = True  # 뎁스 맵 (EEVEE)
-RENDER_NORMAL = True  # 노멀 맵 (EEVEE)
-RENDER_CURVATURE = True  # 곡률 맵 (Cycles)
+RENDER_UNLIT = False  # semantic map (EEVEE)
+RENDER_MATT = False  # 매트 머티리얼 (EEVEE)
+RENDER_DEPTH = False  # 뎁스 맵 (EEVEE)
+RENDER_NORMAL = False  # 노멀 맵 (EEVEE)
+RENDER_CURVATURE = False  # 곡률 맵 (Cycles)
 
 # Windows에서 별도 콘솔창 띄우기
 if sys.platform == "win32":
@@ -94,19 +95,19 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         scene.render.resolution_y = 512
         scene.render.resolution_percentage = 100
 
-        # GPU 렌더링 설정 (Cycles)
+        # GPU 렌더링 설정 (Cycles) - 메모리 누수 방지
         scene.cycles.device = "GPU"
-        scene.cycles.samples = 128
+        scene.cycles.samples = 64  # 샘플 수 감소로 GPU 부하 완화
         scene.cycles.use_denoising = True
 
-        # GPU 메모리 최적화 (RTX 4070 최적화)
-        scene.cycles.tile_size = 512  # RTX 4070에 최적화된 타일 크기
+        # GPU 메모리 최적화 (메모리 누수 방지)
+        scene.cycles.tile_size = 256  # 타일 크기 감소로 메모리 사용량 최적화
         scene.cycles.use_adaptive_sampling = True
         scene.cycles.adaptive_threshold = 0.01
-        scene.cycles.adaptive_min_samples = 64
-        scene.cycles.max_bounces = 12  # 반사 횟수 증가로 GPU 활용도 향상
-        scene.cycles.caustics_reflective = True  # 반사 카우스틱 활성화
-        scene.cycles.caustics_refractive = True  # 굴절 카우스틱 활성화
+        scene.cycles.adaptive_min_samples = 32  # 최소 샘플 수 감소
+        scene.cycles.max_bounces = 8  # 반사 횟수 감소로 GPU 부하 완화
+        scene.cycles.caustics_reflective = False  # 카우스틱 비활성화로 메모리 절약
+        scene.cycles.caustics_refractive = False  # 카우스틱 비활성화로 메모리 절약
 
         # === 카메라 포즈 정의 ===
         target = mathutils.Vector((0, 100, 0))
@@ -149,14 +150,19 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
 
         # === 하위 폴더(케이스) 자동 순회 ===
         parent_folder = os.path.basename(os.path.normpath(self.folder_path))
-        case_folders = [
+        all_case_folders = [
             f
             for f in sorted(os.listdir(self.folder_path), reverse=Reverses)
             if os.path.isdir(os.path.join(self.folder_path, f))
         ]
-        case_folders = case_folders[:MAX_CASES]  # 최대 케이스 수만큼만
+        
+        # 시작 케이스부터 최대 케이스까지 선택
+        start_idx = START_CASE - 1  # 0-based 인덱스로 변환
+        end_idx = min(MAX_CASES, len(all_case_folders))
+        case_folders = all_case_folders[start_idx:end_idx]
 
         total = len(case_folders)
+        total_all = len(all_case_folders)
         
         # 활성화된 렌더링 타입 수 계산
         active_render_types = sum([
@@ -166,16 +172,17 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
 
         start_time = time.time()
         print(f"=== OPTIMIZED RENDERING MODE ===")
-        print(f"Total cases: {total}")
+        print(f"Total cases in folder: {total_all}")
+        print(f"Processing cases: {START_CASE} to {MAX_CASES} ({total} cases)")
         print(f"Active render types: {active_render_types}")
 
         # 전체 렌더링 통계 계산
         total_renders_all_models = total * active_render_types * (30 if Sequence else 10)
         completed_renders_all = 0
         
-        for idx, selected_folder in enumerate(case_folders, 1):
+        for idx, selected_folder in enumerate(case_folders, START_CASE):
             case_start_time = time.time()
-            print(f"\n[{idx}/{total}] Processing: {selected_folder}")
+            print(f"\n[{idx}/{MAX_CASES}] Processing: {selected_folder}")
             case_path = os.path.join(self.folder_path, selected_folder)
             if not os.path.isdir(case_path):
                 continue
@@ -620,7 +627,7 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         for render_type_idx, render_config in enumerate(render_configs):
             render_type, output_dir, engine, mat_gum, mat_tooth, use_shadow, pass_type = render_config
             
-            print(f"  [{idx}/{total}] [{render_type_idx+1}/{len(render_configs)}] Starting {render_type.upper()} rendering ({engine})")
+            print(f"  [{idx}/{MAX_CASES}] [{render_type_idx+1}/{len(render_configs)}] Starting {render_type.upper()} rendering ({engine})")
             
             # 엔진 설정 (한 번만)
             scene.render.engine = engine
@@ -678,14 +685,37 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 remaining_renders_all = total_renders_all_models - current_total_renders
                 estimated_remaining_time = remaining_renders_all * avg_time_per_render
                 
-                print(f"    [{idx}/{total}] {render_type.upper()}: {view_idx+1}/{len(camera_data)} views | "
+                print(f"    [{idx}/{MAX_CASES}] {render_type.upper()}: {view_idx+1}/{len(camera_data)} views | "
                       f"Model: {completed_renders}/{total_renders} ({completed_renders/total_renders*100:.1f}%) | "
                       f"Overall: {current_total_renders}/{total_renders_all_models} ({current_total_renders/total_renders_all_models*100:.1f}%) | "
                       f"ETA: {self._format_time(estimated_remaining_time)}")
             
-            print(f"  [{idx}/{total}] [{render_type_idx+1}/{len(render_configs)}] Completed {render_type.upper()} rendering")
+            print(f"  [{idx}/{MAX_CASES}] [{render_type_idx+1}/{len(render_configs)}] Completed {render_type.upper()} rendering")
+            
+            # GPU 메모리 정리 (Cycles 렌더링 후)
+            if engine == 'CYCLES':
+                self._cleanup_gpu_memory()
         
         return completed_renders
+
+    def _cleanup_gpu_memory(self):
+        """GPU 메모리 정리 및 안정성 향상"""
+        try:
+            # GPU 메모리 정리
+            bpy.ops.wm.redraw_timer(type='DRAW_WIN_SWAP', iterations=1)
+            
+            # Cycles GPU 메모리 정리
+            if hasattr(bpy.context.scene, 'cycles') and bpy.context.scene.cycles.device == 'GPU':
+                # GPU 컨텍스트 새로고침
+                bpy.context.scene.cycles.device = 'CPU'
+                bpy.context.scene.cycles.device = 'GPU'
+                
+            # 가비지 컬렉션 강제 실행
+            import gc
+            gc.collect()
+            
+        except Exception as e:
+            print(f"GPU 메모리 정리 중 오류: {e}")
 
     def _generate_camera_positions(self, camera_positions, target):
         """카메라 위치들을 생성 (Sequence 모드 처리 포함)"""
