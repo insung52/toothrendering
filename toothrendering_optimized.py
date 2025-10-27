@@ -7,10 +7,18 @@ import subprocess
 import sys
 import time
 
+'''
+카메라의 위치, 각도
+extrinsic 
+rotation, translation
+
+intrinsic projection matrix, view matrix 총 5개
+렌더링 
+'''
 
 # 설정 변수
-MAX_CASES = 50  # 처리할 최대 케이스 수
-START_CASE = 45  # 시작 케이스 번호 (1부터 시작)
+MAX_CASES = 100  # 처리할 최대 케이스 수
+START_CASE = 1  # 시작 케이스 번호 (1부터 시작)
 Reverses = False  # 폴더 순서 역순 여부
 Sequence = True # true : 카메라 각도를 연속으로, false : 기존 10개 카메라 각도 사용용 
 # top -> left -> bottom 3개의 기존 카메라 각도를 키프레임으로 사용
@@ -114,17 +122,42 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         distance = 100
         
         if Sequence:
-            # Sequence 모드: top -> left -> bottom 3개 키포인트만 사용
-            sequence_keypoints = [
-                ("top", mathutils.Vector((0, -1, 1))),
-                ("left", mathutils.Vector((-1, -1, 0))),
-                ("bottom", mathutils.Vector((0, -1, -1))),
-            ]
+            # Sequence 모드: 8×5=40개 카메라 각도 생성
+            # 기본 벡터 (0, -1, -1)을 기준으로
+            # 1. X축 중심으로 -20, -10, 0, 10, 20도 회전 (각도 단위)
+            # 2. Y축 중심으로 0, 45, 90, 135, 180, 225, 270, 315도 회전 (각도 단위)
             camera_positions = []
-            for name, view_dir in sequence_keypoints:
-                view_dir = view_dir.normalized()
-                cam_pos = target + view_dir * distance
-                camera_positions.append((name, cam_pos))
+            x_angles = [0, 45, 90, 135, 180, 225, 270, 315]  # Y축 중심 회전 (도)
+            z_angle_offsets = [-20, -10, 0, 10, 20]  # X축 중심 회전 (도)
+            
+            # 기본 벡터 (0, -1, -1)
+            base_vec = mathutils.Vector((0, -1, 0))
+            
+            for z_idx, x_angle_offset in enumerate(z_angle_offsets):
+                # 먼저 X축 중심으로 회전
+                if x_angle_offset == 0:
+                    vec_after_x = base_vec
+                else:
+                    x_rotation_rad = math.radians(x_angle_offset)
+                    x_rotation_matrix = mathutils.Matrix.Rotation(x_rotation_rad, 3, 'X')
+                    vec_after_x = x_rotation_matrix @ base_vec
+                
+                # 그 다음 Y축 중심으로 8번 회전 (0, 45, 90, ... 315도)
+                for x_idx, y_angle in enumerate(x_angles):
+                    if y_angle == 0:
+                        rotated_vec = vec_after_x
+                    else:
+                        y_rotation_rad = math.radians(y_angle)
+                        y_rotation_matrix = mathutils.Matrix.Rotation(y_rotation_rad, 3, 'Z')
+                        rotated_vec = y_rotation_matrix @ vec_after_x
+                    
+                    # 정규화
+                    rotated_vec = rotated_vec.normalized()
+                    cam_pos = target + rotated_vec * distance
+                    
+                    # 파일명 생성
+                    name = f"z_{x_idx:02d}_x{x_angle_offset:+03d}"
+                    camera_positions.append((name, cam_pos))
         else:
             # 기존 모드: 10개 카메라 각도 사용
             camera_configs = [
@@ -144,6 +177,9 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 view_dir = view_dir.normalized()
                 cam_pos = target + view_dir * distance
                 camera_positions.append((name, cam_pos))
+
+        # === 카메라 파라미터 추출 (Sequence 모드일 때만) ===
+        self._extract_camera_parameters(scene, camera_positions, target, output_base)
 
         # === 머티리얼 생성 ===
         materials = self._create_materials()
@@ -177,7 +213,7 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         print(f"Active render types: {active_render_types}")
 
         # 전체 렌더링 통계 계산
-        total_renders_all_models = total * active_render_types * (30 if Sequence else 10)
+        total_renders_all_models = total * active_render_types * (40 if Sequence else 10)
         completed_renders_all = 0
         
         for idx, selected_folder in enumerate(case_folders, START_CASE):
@@ -576,6 +612,15 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         mesh.materials.append(materials['gum_unlit'])
         mesh.materials.append(materials['tooth_unlit'])
 
+        # 메시 변환: X축 -45도 회전 후 Z축 +70 이동
+        # 1. 먼저 X축 회전 (월드 기준)
+        obj.rotation_euler.x += math.radians(-45)
+        
+        # 2. 회전된 상태에서 Z축 위로 +70 이동
+        # 회전된 좌표계의 Z축 방향으로 이동
+        up_vector = mathutils.Vector((0, 29.29, 70))
+        obj.location += up_vector
+        
         # material_index 할당 (잇몸: 0, 치아: 1)
         with open(json_file) as f:
             meta = json.load(f)
@@ -655,6 +700,13 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 bpy.context.scene.camera = cam_obj
                 cam_data.angle = math.radians(60)
                 
+                # Depth 렌더링을 위한 카메라 clip 범위 설정
+                if render_type in ['depth', 'normal']:
+
+                    min_depth = 50
+                    max_depth = 150
+                    
+                
                 # 라이트 생성
                 light_data = bpy.data.lights.new(view_name + "_sun", type="SUN")
                 light_data.energy = 5
@@ -668,9 +720,29 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                     self._render_pass(scene, cam_obj, obj, render_type, output_dir, file_prefix, view_name)
                 else:
                     # 일반 렌더링
-                    output_path = os.path.join(output_dir, f"{file_prefix}_{view_name}.png")
+                    # 파일 형식 설정 (lit, normal은 WebP)
+                    img_settings = scene.render.image_settings
+                    prev_format = img_settings.file_format
+                    prev_color_mode = img_settings.color_mode
+                    prev_color_depth = img_settings.color_depth
+                    
+                    if render_type in ['lit', 'normal', 'unlit', 'matt', 'curvature']:
+                        # WebP로 저장
+                        img_settings.file_format = "WEBP"
+                        file_ext = ".webp"
+                    else:
+                        # PNG로 저장
+                        img_settings.file_format = "PNG"
+                        file_ext = ".png"
+                    
+                    output_path = os.path.join(output_dir, f"{file_prefix}_{view_name}{file_ext}")
                     scene.render.filepath = output_path
                     bpy.ops.render.render(write_still=True)
+                    
+                    # 복구
+                    img_settings.file_format = prev_format
+                    img_settings.color_mode = prev_color_mode
+                    img_settings.color_depth = prev_color_depth
                 
                 # 카메라와 라이트 정리
                 bpy.data.objects.remove(cam_obj, do_unlink=True)
@@ -720,31 +792,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
     def _generate_camera_positions(self, camera_positions, target):
         """카메라 위치들을 생성 (Sequence 모드 처리 포함)"""
         if Sequence:
-            # Sequence 모드: top->left->bottom 보간으로 30장 생성
-            total_sequence_frames = 30
-            frames_per_segment = 15  # top->left: 15장, left->bottom: 15장
-            
-            camera_data = []
-            for frame_idx in range(total_sequence_frames):
-                # 프레임 인덱스에 따라 보간 계산
-                if frame_idx < frames_per_segment:
-                    # top -> left 보간 (0~14)
-                    t = frame_idx / (frames_per_segment - 1)
-                    start_pos = camera_positions[0][1]  # top
-                    end_pos = camera_positions[1][1]    # left
-                    cam_pos = start_pos.lerp(end_pos, t)
-                    view_name = f"sequence_{frame_idx:02d}"
-                else:
-                    # left -> bottom 보간 (15~29)
-                    t = (frame_idx - frames_per_segment) / (frames_per_segment - 1)
-                    start_pos = camera_positions[1][1]  # left
-                    end_pos = camera_positions[2][1]    # bottom
-                    cam_pos = start_pos.lerp(end_pos, t)
-                    view_name = f"sequence_{frame_idx:02d}"
-                
-                camera_data.append((view_name, cam_pos))
-            
-            return camera_data
+            # Sequence 모드: 40개 카메라 각도 그대로 사용
+            return camera_positions
         else:
             # 기존 모드: 카메라 위치 그대로 사용
             return camera_positions
@@ -752,74 +801,98 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
     def _render_pass(self, scene, cam_obj, obj, pass_type, output_dir, file_prefix, view_name):
         """패스 기반 렌더링 (depth, normal)"""
         if pass_type == 'depth':
-            # 화면 기준(카메라 공간) 깊이 최소/최대 계산
-            def compute_obj_depth_range_screen(obj_local, cam_local):
-                cam_inv = cam_local.matrix_world.inverted()
-                min_d, max_d = None, None
-                for v in obj_local.data.vertices:
-                    world_co = obj_local.matrix_world @ v.co
-                    cam_co = cam_inv @ world_co
-                    depth_val = -cam_co.z  # 카메라가 -Z를 바라봄
-                    if min_d is None or depth_val < min_d:
-                        min_d = depth_val
-                    if max_d is None or depth_val > max_d:
-                        max_d = depth_val
-                if min_d is None or max_d is None:
-                    return 0.0, 1.0
-                min_d = max(min_d, 0.0)
-                if max_d <= min_d:
-                    max_d = min_d + 1.0
-                return float(min_d), float(max_d)
-
-            near_d, far_d = compute_obj_depth_range_screen(obj, cam_obj)
-
-            # 뷰에 맞춰 카메라 클리핑 범위를 메시 범위로 세팅
-            depth_range = max(far_d - near_d, 1e-3)
-            margin = max(0.01, depth_range * 0.05)
-            cam_data = cam_obj.data
-            cam_data.clip_start = max(0.001, near_d - margin)
-            cam_data.clip_end = far_d + margin
-
+            # EEVEE에서 depth pass 활성화
+            scene.render.engine = "BLENDER_EEVEE_NEXT"
+            
+            # View layer 설정 - depth pass 활성화
             view_layer = bpy.context.view_layer
+            
+            # EEVEE에서 depth pass 활성화하는 방법
+            # 1. Combined pass 활성화
+            view_layer.use_pass_combined = True
+            
+            # 2. Z (depth) pass 활성화 - EEVEE는 이것만으로 충분
+            view_layer.use_pass_z = True
+            
+            # 3. Scene 업데이트
+            bpy.context.view_layer.update()
+            
+            # 4. EEVEE가 depth pass를 렌더링하도록 확인
+            # (EEVEE는 use_pass_z=True만 설정하면 자동으로 depth pass를 렌더링함)
+            
+            # EEVEE 설정 (안전하게)
             try:
-                view_layer.use_pass_z = True
-            except Exception:
+                scene.eevee.taa_render_samples = 1  # 빠른 렌더링
+            except:
                 pass
-
-            # 컴포지터: Depth -> Normalize -> Composite
+            
+            try:
+                if hasattr(scene.eevee, 'use_ssr'):
+                    scene.eevee.use_ssr = False
+                if hasattr(scene.eevee, 'use_ssr_refraction'):
+                    scene.eevee.use_ssr_refraction = False
+            except:
+                pass
+            
+            # 컴포지터 설정
             prev_use_nodes = scene.use_nodes
             scene.use_nodes = True
             ntree = scene.node_tree
             nodes = ntree.nodes
             links = ntree.links
             nodes.clear()
+            
+            # Render Layers 노드
             rl = nodes.new(type="CompositorNodeRLayers")
-            z_norm = nodes.new(type="CompositorNodeNormalize")
+            rl.location = (-600, 0)
+            
+            # Map Range 노드로 [clip_start, clip_end]를 [0, 1]로 매핑
+            map_range = nodes.new(type="CompositorNodeMapRange")
+            map_range.location = (-400, 0)
+            map_range.use_clamp = True
+            
+            # 카메라 clip 범위 설정
+            cam_data = cam_obj.data
+            map_range.inputs["From Min"].default_value = cam_data.clip_start  # 가까운 부분
+            map_range.inputs["From Max"].default_value = cam_data.clip_end    # 먼 부분
+            map_range.inputs["To Min"].default_value = 0.0   # 가까운 부분 → 검은색
+            map_range.inputs["To Max"].default_value = 1.0   # 먼 부분 → 흰색 (inverted)
+            
+            # Composite 노드
             comp = nodes.new(type="CompositorNodeComposite")
-            links.new(rl.outputs["Depth"], z_norm.inputs[0])
-            links.new(z_norm.outputs[0], comp.inputs["Image"])
-
+            comp.location = (-200, 0)
+            
+            # 연결: Depth -> Map Range -> Composite
+            links.new(rl.outputs["Depth"], map_range.inputs["Value"])
+            links.new(map_range.outputs["Value"], comp.inputs["Image"])
+            
+            # 이미지 설정
             img_settings = scene.render.image_settings
             prev_format = img_settings.file_format
             prev_color_mode = img_settings.color_mode
             prev_color_depth = img_settings.color_depth
-            prev_view_transform = scene.view_settings.view_transform
-
-            img_settings.file_format = "PNG"
-            img_settings.color_mode = "BW"
-            img_settings.color_depth = "16"
-            scene.view_settings.view_transform = "Standard"
-
-            depth_path = os.path.join(output_dir, f"{file_prefix}_{view_name}.png")
+            
+            if pass_type == 'depth':
+                # Depth는 EXR 형식으로 저장 (32비트 float)
+                img_settings.file_format = "OPEN_EXR"
+                img_settings.color_mode = "BW"
+                file_ext = ".exr"
+            elif pass_type == 'normal':
+                # Normal은 WebP 형식으로 저장
+                img_settings.file_format = "WEBP"
+                img_settings.color_mode = "RGB"
+                file_ext = ".webp"
+            
+            depth_path = os.path.join(output_dir, f"{file_prefix}_{view_name}{file_ext}")
             scene.render.filepath = depth_path
-            scene.render.engine = "BLENDER_EEVEE_NEXT"
+            
+            # 렌더링 실행
             bpy.ops.render.render(write_still=True, use_viewport=False)
-
+            
             # 복구
             img_settings.file_format = prev_format
             img_settings.color_mode = prev_color_mode
             img_settings.color_depth = prev_color_depth
-            scene.view_settings.view_transform = prev_view_transform
             scene.use_nodes = prev_use_nodes
 
         elif pass_type == 'normal':
@@ -900,12 +973,13 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             prev_color_depth = img_settings.color_depth
             prev_view_transform = scene.view_settings.view_transform
 
-            img_settings.file_format = "PNG"
+            # Normal은 WebP 형식으로 저장
+            img_settings.file_format = "WEBP"
             img_settings.color_mode = "RGB"
             img_settings.color_depth = "8"
             scene.view_settings.view_transform = "Standard"
 
-            normal_path = os.path.join(output_dir, f"{file_prefix}_{view_name}.png")
+            normal_path = os.path.join(output_dir, f"{file_prefix}_{view_name}.webp")
             scene.render.filepath = normal_path
             bpy.ops.render.render(write_still=True, use_viewport=False)
 
@@ -915,6 +989,159 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             img_settings.color_depth = prev_color_depth
             scene.view_settings.view_transform = prev_view_transform
             scene.use_nodes = prev_use_nodes
+
+    def _extract_camera_parameters(self, scene, camera_positions, target, output_base):
+        """카메라 파라미터 추출 및 JSON 저장 (Sequence 모드일 때만)"""
+        if not Sequence:
+            return
+            
+        print("=== 카메라 파라미터 추출 시작 ===")
+        
+        # 카메라 파라미터 저장 디렉토리 생성
+        cameras_dir = os.path.join(output_base, "cameras")
+        os.makedirs(cameras_dir, exist_ok=True)
+        
+        # 40개 카메라 포즈 생성
+        camera_data = self._generate_camera_positions(camera_positions, target)
+        
+        # 공통 메타데이터
+        resolution_x = scene.render.resolution_x
+        resolution_y = scene.render.resolution_y
+        pixel_aspect_x = scene.render.pixel_aspect_x
+        pixel_aspect_y = scene.render.pixel_aspect_y
+        
+        # 카메라 데이터 배열
+        views = []
+        
+        for view_idx, (view_name, cam_pos) in enumerate(camera_data):
+            # 임시 카메라 생성
+            cam_data = bpy.data.cameras.new(view_name + "_temp")
+            cam_obj = bpy.data.objects.new(view_name + "_temp", cam_data)
+            bpy.context.collection.objects.link(cam_obj)
+            
+            # 카메라 위치 및 회전 설정
+            cam_obj.location = cam_pos
+            direction = target - cam_pos
+            rot_quat = direction.to_track_quat("-Z", "Y")
+            cam_obj.rotation_euler = rot_quat.to_euler()
+            cam_data.angle = math.radians(60)
+            
+            # 카메라 변환 행렬 업데이트 강제
+            bpy.context.view_layer.update()
+            cam_obj.update_tag()
+            
+            # 카메라 파라미터 계산
+            params = self._calculate_camera_params(scene, cam_obj, cam_data, resolution_x, resolution_y, pixel_aspect_x, pixel_aspect_y)
+            params['view_name'] = view_name
+            views.append(params)
+            
+            # 임시 카메라 정리
+            bpy.data.objects.remove(cam_obj, do_unlink=True)
+            bpy.data.cameras.remove(cam_data, do_unlink=True)
+        
+        # JSON 파일로 저장
+        camera_params = {
+            'metadata': {
+                'total_views': len(views),
+                'resolution': [resolution_x, resolution_y],
+                'pixel_aspect': [pixel_aspect_x, pixel_aspect_y],
+                'convention': 'Blender (-Z forward, +Y up)',
+                'sequence_mode': True
+            },
+            'views': views
+        }
+        
+        # 파일명을 카메라 개수에 맞춰 동적으로 생성
+        json_filename = f"sequence_{len(views)}.json"
+        json_path = os.path.join(cameras_dir, json_filename)
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(camera_params, f, indent=2, ensure_ascii=False)
+        
+        print(f"카메라 파라미터 저장 완료: {json_path}")
+        print(f"총 {len(views)}개 뷰의 파라미터 추출됨")
+
+    def _calculate_camera_params(self, scene, cam_obj, cam_data, res_x, res_y, pixel_aspect_x, pixel_aspect_y):
+        """개별 카메라의 파라미터 계산"""
+        
+        # === Intrinsic Parameters (K) ===
+        # FOV에서 focal length 계산
+        fov_rad = cam_data.angle
+        focal_length_px = (res_y / 2.0) / math.tan(fov_rad / 2.0)
+        
+        # 픽셀 종횡비 반영
+        fx = focal_length_px / pixel_aspect_x
+        fy = focal_length_px / pixel_aspect_y
+        
+        # 주점 (이미지 중심 + shift)
+        cx = res_x / 2.0 + cam_data.shift_x * res_x
+        cy = res_y / 2.0 + cam_data.shift_y * res_y
+        
+        # 카메라 내참조 행렬 K
+        K = [
+            [fx, 0, cx],
+            [0, fy, cy],
+            [0, 0, 1]
+        ]
+        
+        # === Extrinsic Parameters ===
+        # 카메라 월드 행렬 (Camera to World)
+        T_cw = [list(row) for row in cam_obj.matrix_world]
+        
+        # 회전 행렬 R (3x3)와 평행이동 벡터 t (3,)
+        R = [list(row) for row in T_cw[:3][:3]]
+        t = [T_cw[0][3], T_cw[1][3], T_cw[2][3]]
+        
+        # World to Camera 변환 (World to Camera)
+        T_wc = [list(row) for row in cam_obj.matrix_world.inverted()]
+        
+        # === View Matrix (World to Camera) ===
+        view_matrix = [list(row) for row in cam_obj.matrix_world.inverted()]
+        
+        # === Projection Matrix ===
+        # OpenGL 스타일 투영 행렬 (perspective)
+        near = cam_data.clip_start
+        far = cam_data.clip_end
+        
+        # FOV 기반 투영 행렬 계산
+        f = 1.0 / math.tan(fov_rad / 2.0)
+        aspect = res_x / res_y
+        
+        projection_matrix = [
+            [f/aspect, 0, 0, 0],
+            [0, f, 0, 0],
+            [0, 0, (far + near) / (near - far), (2 * far * near) / (near - far)],
+            [0, 0, -1, 0]
+        ]
+        
+        return {
+            'intrinsic': {
+                'K': K,
+                'fx': fx,
+                'fy': fy,
+                'cx': cx,
+                'cy': cy,
+                'fov_degrees': math.degrees(fov_rad)
+            },
+            'extrinsic': {
+                'T_cw': T_cw,  # Camera to World
+                'T_wc': T_wc,  # World to Camera
+                'R': R,
+                't': t
+            },
+            'matrices': {
+                'view_matrix': view_matrix,
+                'projection_matrix': projection_matrix
+            },
+            'camera_info': {
+                'location': list(cam_obj.location),
+                'rotation_euler': list(cam_obj.rotation_euler),
+                'lens_angle_degrees': math.degrees(cam_data.angle),
+                'clip_start': near,
+                'clip_end': far,
+                'shift_x': cam_data.shift_x,
+                'shift_y': cam_data.shift_y
+            }
+        }
 
     def _format_time(self, seconds):
         """시간을 시:분:초 형식으로 변환"""

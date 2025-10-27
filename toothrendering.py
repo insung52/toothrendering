@@ -7,6 +7,8 @@ import subprocess
 import sys
 import time
 
+# 카메라 파라미터
+# 
 
 # 설정 변수
 MAX_CASES = 1  # 처리할 최대 케이스 수
