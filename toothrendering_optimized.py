@@ -17,21 +17,26 @@ intrinsic projection matrix, view matrix 총 5개
 '''
 
 # 설정 변수
-MAX_CASES = 100  # 처리할 최대 케이스 수
+MAX_CASES = 5  # 처리할 최대 케이스 수
 START_CASE = 1  # 시작 케이스 번호 (1부터 시작)
 Reverses = False  # 폴더 순서 역순 여부
-Sequence = True # true : 카메라 각도를 연속으로, false : 기존 10개 카메라 각도 사용용 
+Sequence = 3 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40개), 2: 6개 각도, 3: 44개 각도 (11x4 grid)
+# Sequence = 1 모드: 8×5=40개 카메라 각도 생성
 # top -> left -> bottom 3개의 기존 카메라 각도를 키프레임으로 사용
 # top -> left 15장, left -> bottom 15장, 총 30장의 이미지를 저장함.
 # 전체 사진들을 순서대로 이어서 보면 동영상처럼 카메라가 orbital 회전하는것처럼 구현해야함
 
 # 렌더링 타입별 활성화 설정
-RENDER_LIT = True  # 라이팅 머티리얼 (Cycles)
+RENDER_LIT = False  # 라이팅 머티리얼 (Cycles)
 RENDER_UNLIT = False  # semantic map (EEVEE)
 RENDER_MATT = False  # 매트 머티리얼 (EEVEE)
 RENDER_DEPTH = False  # 뎁스 맵 (EEVEE)
 RENDER_NORMAL = False  # 노멀 맵 (EEVEE)
 RENDER_CURVATURE = False  # 곡률 맵 (Cycles)
+RENDER_POSITION = True  # 포지션 맵 (EEVEE) - 3D 월드 좌표
+
+# 파일 형식 설정
+USE_OPTIMIZED_FORMATS = False  # True: WebP/EXR 등 최적 형식, False: 모두 PNG
 
 # Windows에서 별도 콘솔창 띄우기
 if sys.platform == "win32":
@@ -90,12 +95,14 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         depth_dir = os.path.join(output_base, "depth")
         normal_dir = os.path.join(output_base, "normal")
         curvature_dir = os.path.join(output_base, "curvature")
+        position_dir = os.path.join(output_base, "position")
         os.makedirs(lit_dir, exist_ok=True)
         os.makedirs(unlit_dir, exist_ok=True)
         os.makedirs(matt_dir, exist_ok=True)
         os.makedirs(depth_dir, exist_ok=True)
         os.makedirs(normal_dir, exist_ok=True)
         os.makedirs(curvature_dir, exist_ok=True)
+        os.makedirs(position_dir, exist_ok=True)
 
         # === 렌더 엔진 및 해상도 설정 ===
         scene = bpy.context.scene
@@ -120,9 +127,9 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         # === 카메라 포즈 정의 ===
         target = mathutils.Vector((0, 100, 0))
         distance = 100
-        
-        if Sequence:
-            # Sequence 모드: 8×5=40개 카메라 각도 생성
+
+        if Sequence == 1:
+            # Sequence 1 모드: 8×5=40개 카메라 각도 생성
             # 기본 벡터 (0, -1, -1)을 기준으로
             # 1. X축 중심으로 -20, -10, 0, 10, 20도 회전 (각도 단위)
             # 2. Y축 중심으로 0, 45, 90, 135, 180, 225, 270, 315도 회전 (각도 단위)
@@ -158,7 +165,76 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                     # 파일명 생성
                     name = f"z_{x_idx:02d}_x{x_angle_offset:+03d}"
                     camera_positions.append((name, cam_pos))
-        else:
+        elif Sequence == 2:
+            # Sequence 2 모드: 6개 카메라 각도
+            # Elevation(고도): [0°, 0°, 0°, 0°, 89.99°, -89.99°]
+            # Azimuth(방위각): [-90°, 0°, 90°, 180°, 90°, 90°]
+
+            # 직접 벡터로 계산 (Sequence 0 방식과 동일)
+            # 기본: (0, -1, 0) = 정면
+            # X 좌표: 좌(-)/우(+), Y 좌표: 앞(-)/뒤(+), Z 좌표: 아래(-)/위(+)
+
+            camera_configs = [
+                # Elevation 0°, Azimuth -90° → 왼쪽 (left)
+                ("view_0", mathutils.Vector((-1, 0, 0))),
+
+                # Elevation 0°, Azimuth 0° → 정면 (front)
+                ("view_1", mathutils.Vector((0, -1, 0))),
+
+                # Elevation 0°, Azimuth 90° → 오른쪽 (right)
+                ("view_2", mathutils.Vector((1, 0, 0))),
+
+                # Elevation 0°, Azimuth 180° → 뒤 (back)
+                ("view_3", mathutils.Vector((0, 1, 0))),
+
+                # Elevation 89.99°, Azimuth 90° → 위 (top)
+                ("view_4", mathutils.Vector((0, 0, 1))),
+
+                # Elevation -89.99°, Azimuth 90° → 아래 (bottom)
+                ("view_5", mathutils.Vector((0, 0, -1))),
+            ]
+
+            camera_positions = []
+            for name, view_dir in camera_configs:
+                view_dir = view_dir.normalized()
+                cam_pos = target + view_dir * distance
+                camera_positions.append((name, cam_pos))
+        elif Sequence == 3:
+            # Sequence 3 모드: 11×4=44개 카메라 각도
+            # 방위각(Azimuth): 15도 간격으로 11개 (-75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75)
+            # 고도(Elevation): 4개 (-15, 0, 15, 30)
+            camera_positions = []
+
+            # 기본 벡터 (0, -1, 0) - 정면
+            base_vec = mathutils.Vector((0, -1, 0))
+
+            azimuths = [-75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75]  # 방위각 (Z축 회전, 좌우)
+            elevations = [-15, 0, 15, 30]  # 고도 (X축 회전, 상하)
+
+            for elev_idx, elevation in enumerate(elevations):
+                # 먼저 Elevation 회전 (X축 중심) - 상하 각도
+                if elevation == 0:
+                    vec_after_elevation = base_vec
+                else:
+                    elevation_rotation = mathutils.Matrix.Rotation(math.radians(elevation), 3, 'X')
+                    vec_after_elevation = elevation_rotation @ base_vec
+
+                # 그 다음 Azimuth 회전 (Z축 중심) - 좌우 각도
+                for azim_idx, azimuth in enumerate(azimuths):
+                    if azimuth == 0:
+                        final_vec = vec_after_elevation
+                    else:
+                        azimuth_rotation = mathutils.Matrix.Rotation(math.radians(azimuth), 3, 'Z')
+                        final_vec = azimuth_rotation @ vec_after_elevation
+
+                    # 정규화
+                    final_vec = final_vec.normalized()
+                    cam_pos = target + final_vec * distance
+
+                    # 파일명 생성: azim_XX_elev_YY
+                    name = f"azim_{azimuth:+04d}_elev_{elevation:+03d}"
+                    camera_positions.append((name, cam_pos))
+        else:  # Sequence == 0
             # 기존 모드: 10개 카메라 각도 사용
             camera_configs = [
                 ("front", mathutils.Vector((0, -1, 0))),
@@ -178,7 +254,7 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 cam_pos = target + view_dir * distance
                 camera_positions.append((name, cam_pos))
 
-        # === 카메라 파라미터 추출 (Sequence 모드일 때만) ===
+        # === 카메라 파라미터 추출 (Sequence == 1 또는 2 모드일 때) ===
         self._extract_camera_parameters(scene, camera_positions, target, output_base)
 
         # === 머티리얼 생성 ===
@@ -202,8 +278,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         
         # 활성화된 렌더링 타입 수 계산
         active_render_types = sum([
-            RENDER_LIT, RENDER_UNLIT, RENDER_MATT, 
-            RENDER_DEPTH, RENDER_NORMAL, RENDER_CURVATURE
+            RENDER_LIT, RENDER_UNLIT, RENDER_MATT,
+            RENDER_DEPTH, RENDER_NORMAL, RENDER_CURVATURE, RENDER_POSITION
         ])
 
         start_time = time.time()
@@ -213,39 +289,75 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         print(f"Active render types: {active_render_types}")
 
         # 전체 렌더링 통계 계산
-        total_renders_all_models = total * active_render_types * (40 if Sequence else 10)
+        if Sequence == 1:
+            camera_count = 40
+        elif Sequence == 2:
+            camera_count = 6
+        elif Sequence == 3:
+            camera_count = 44
+        else:  # Sequence == 0
+            camera_count = 10
+        total_renders_all_models = total * active_render_types * camera_count
         completed_renders_all = 0
-        
+
+        # 에러 로그 파일 생성
+        error_log_path = os.path.join(output_base, "error_log.txt")
+        error_count = 0
+
         for idx, selected_folder in enumerate(case_folders, START_CASE):
             case_start_time = time.time()
             print(f"\n[{idx}/{MAX_CASES}] Processing: {selected_folder}")
             case_path = os.path.join(self.folder_path, selected_folder)
             if not os.path.isdir(case_path):
                 continue
-                
-            # OBJ/JSON 파일 찾기
-            obj_file, json_file = self._find_obj_json_files(case_path)
-            if not obj_file or not json_file:
-                self.report({"WARNING"}, f"{case_path}: OBJ 또는 JSON 파일을 찾을 수 없습니다.")
+
+            try:
+                # OBJ/JSON 파일 찾기
+                obj_file, json_file = self._find_obj_json_files(case_path)
+                if not obj_file or not json_file:
+                    error_msg = f"OBJ 또는 JSON 파일을 찾을 수 없습니다."
+                    print(f"  [ERROR] {selected_folder}: {error_msg}")
+                    self._log_error(error_log_path, idx, selected_folder, error_msg, None)
+                    error_count += 1
+                    continue
+
+                # 메시 로드 및 설정
+                mesh, obj = self._load_and_setup_mesh(obj_file, json_file, materials)
+                file_prefix = f"{parent_folder}_{selected_folder}"
+
+                # === 렌더링 타입 우선 방식 ===
+                case_completed_renders = self._render_by_type_priority(scene, mesh, obj, materials, camera_positions,
+                                            file_prefix, output_base, target, idx, total,
+                                            active_render_types, start_time, completed_renders_all, total_renders_all_models)
+
+                completed_renders_all += case_completed_renders
+
+                # 케이스 완료 시간 출력
+                case_time = time.time() - case_start_time
+                print(f"  Case completed in {case_time:.1f}s")
+
+            except Exception as e:
+                # 에러 발생 시 로그에 기록하고 다음 케이스로 진행
+                import traceback
+                error_msg = str(e)
+                traceback_str = traceback.format_exc()
+
+                print(f"  [ERROR] {selected_folder}: {error_msg}")
+                print(f"  Skipping to next case...")
+
+                self._log_error(error_log_path, idx, selected_folder, error_msg, traceback_str)
+                error_count += 1
                 continue
-
-            # 메시 로드 및 설정
-            mesh, obj = self._load_and_setup_mesh(obj_file, json_file, materials)
-            file_prefix = f"{parent_folder}_{selected_folder}"
-            
-            # === 렌더링 타입 우선 방식 ===
-            case_completed_renders = self._render_by_type_priority(scene, mesh, obj, materials, camera_positions, 
-                                        file_prefix, output_base, target, idx, total, 
-                                        active_render_types, start_time, completed_renders_all, total_renders_all_models)
-            
-            completed_renders_all += case_completed_renders
-
-            # 케이스 완료 시간 출력
-            case_time = time.time() - case_start_time
-            print(f"  Case completed in {case_time:.1f}s")
 
         total_time = time.time() - start_time
         print(f"\n렌더링 완료! 총 소요시간: {self._format_time(total_time)}")
+
+        # 에러 통계 출력
+        if error_count > 0:
+            print(f"\n⚠️  {error_count}개 케이스에서 에러 발생")
+            print(f"에러 로그: {error_log_path}")
+        else:
+            print(f"\n✓ 모든 케이스가 성공적으로 처리되었습니다!")
 
         # 완료 메시지 및 파일 탐색기 열기
         self._show_completion_message(output_base)
@@ -660,9 +772,12 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             render_configs.append(('normal', os.path.join(output_base, "normal"), 'BLENDER_EEVEE_NEXT', 
                                  None, None, False, 'normal'))
         if RENDER_CURVATURE:
-            render_configs.append(('curvature', os.path.join(output_base, "curvature"), 'CYCLES', 
+            render_configs.append(('curvature', os.path.join(output_base, "curvature"), 'CYCLES',
                                  materials['curvature'], materials['curvature'], False, None))
-        
+        if RENDER_POSITION:
+            render_configs.append(('position', os.path.join(output_base, "position"), 'BLENDER_EEVEE_NEXT',
+                                 None, None, False, 'position'))
+
         total_renders = len(camera_data) * len(render_configs)
         completed_renders = 0
         
@@ -701,7 +816,7 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 cam_data.angle = math.radians(60)
                 
                 # Depth 렌더링을 위한 카메라 clip 범위 설정
-                if render_type in ['depth', 'normal']:
+                if render_type in ['depth', 'normal', 'position']:
 
                     min_depth = 50
                     max_depth = 150
@@ -716,29 +831,33 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 light_obj.parent = cam_obj
                 
                 # 렌더링 실행
-                if render_type in ['depth', 'normal']:
-                    self._render_pass(scene, cam_obj, obj, render_type, output_dir, file_prefix, view_name)
+                if render_type in ['depth', 'normal', 'position']:
+                    self._render_pass(scene, cam_obj, obj, pass_type, output_dir, file_prefix, view_name)
                 else:
                     # 일반 렌더링
-                    # 파일 형식 설정 (lit, normal은 WebP)
+                    # 파일 형식 설정
                     img_settings = scene.render.image_settings
                     prev_format = img_settings.file_format
                     prev_color_mode = img_settings.color_mode
                     prev_color_depth = img_settings.color_depth
-                    
-                    if render_type in ['lit', 'normal', 'unlit', 'matt', 'curvature']:
-                        # WebP로 저장
-                        img_settings.file_format = "WEBP"
-                        file_ext = ".webp"
+
+                    if USE_OPTIMIZED_FORMATS:
+                        # 최적 형식 사용 (WebP)
+                        if render_type in ['lit', 'normal', 'unlit', 'matt', 'curvature']:
+                            img_settings.file_format = "WEBP"
+                            file_ext = ".webp"
+                        else:
+                            img_settings.file_format = "PNG"
+                            file_ext = ".png"
                     else:
-                        # PNG로 저장
+                        # 모두 PNG로 저장
                         img_settings.file_format = "PNG"
                         file_ext = ".png"
-                    
+
                     output_path = os.path.join(output_dir, f"{file_prefix}_{view_name}{file_ext}")
                     scene.render.filepath = output_path
                     bpy.ops.render.render(write_still=True)
-                    
+
                     # 복구
                     img_settings.file_format = prev_format
                     img_settings.color_mode = prev_color_mode
@@ -791,12 +910,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
 
     def _generate_camera_positions(self, camera_positions, target):
         """카메라 위치들을 생성 (Sequence 모드 처리 포함)"""
-        if Sequence:
-            # Sequence 모드: 40개 카메라 각도 그대로 사용
-            return camera_positions
-        else:
-            # 기존 모드: 카메라 위치 그대로 사용
-            return camera_positions
+        # 모든 모드에서 카메라 위치 그대로 사용
+        return camera_positions
 
     def _render_pass(self, scene, cam_obj, obj, pass_type, output_dir, file_prefix, view_name):
         """패스 기반 렌더링 (depth, normal)"""
@@ -871,18 +986,27 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             prev_format = img_settings.file_format
             prev_color_mode = img_settings.color_mode
             prev_color_depth = img_settings.color_depth
-            
-            if pass_type == 'depth':
-                # Depth는 EXR 형식으로 저장 (32비트 float)
-                img_settings.file_format = "OPEN_EXR"
-                img_settings.color_mode = "BW"
-                file_ext = ".exr"
-            elif pass_type == 'normal':
-                # Normal은 WebP 형식으로 저장
-                img_settings.file_format = "WEBP"
-                img_settings.color_mode = "RGB"
-                file_ext = ".webp"
-            
+
+            if USE_OPTIMIZED_FORMATS:
+                if pass_type == 'depth':
+                    # Depth는 EXR 형식으로 저장 (32비트 float)
+                    img_settings.file_format = "OPEN_EXR"
+                    img_settings.color_mode = "BW"
+                    file_ext = ".exr"
+                elif pass_type == 'normal':
+                    # Normal은 WebP 형식으로 저장
+                    img_settings.file_format = "WEBP"
+                    img_settings.color_mode = "RGB"
+                    file_ext = ".webp"
+            else:
+                # 모두 PNG로 저장
+                img_settings.file_format = "PNG"
+                if pass_type == 'depth':
+                    img_settings.color_mode = "BW"
+                elif pass_type == 'normal':
+                    img_settings.color_mode = "RGB"
+                file_ext = ".png"
+
             depth_path = os.path.join(output_dir, f"{file_prefix}_{view_name}{file_ext}")
             scene.render.filepath = depth_path
             
@@ -973,13 +1097,22 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             prev_color_depth = img_settings.color_depth
             prev_view_transform = scene.view_settings.view_transform
 
-            # Normal은 WebP 형식으로 저장
-            img_settings.file_format = "WEBP"
-            img_settings.color_mode = "RGB"
-            img_settings.color_depth = "8"
+            if USE_OPTIMIZED_FORMATS:
+                # Normal은 WebP 형식으로 저장
+                img_settings.file_format = "WEBP"
+                img_settings.color_mode = "RGB"
+                img_settings.color_depth = "8"
+                file_ext = ".webp"
+            else:
+                # PNG로 저장
+                img_settings.file_format = "PNG"
+                img_settings.color_mode = "RGB"
+                img_settings.color_depth = "8"
+                file_ext = ".png"
+
             scene.view_settings.view_transform = "Standard"
 
-            normal_path = os.path.join(output_dir, f"{file_prefix}_{view_name}.webp")
+            normal_path = os.path.join(output_dir, f"{file_prefix}_{view_name}{file_ext}")
             scene.render.filepath = normal_path
             bpy.ops.render.render(write_still=True, use_viewport=False)
 
@@ -990,11 +1123,174 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             scene.view_settings.view_transform = prev_view_transform
             scene.use_nodes = prev_use_nodes
 
+        elif pass_type == 'position':
+            # EEVEE 엔진으로 설정
+            scene.render.engine = "BLENDER_EEVEE_NEXT"
+
+            # 라이팅 효과 제거
+            lights = [obj for obj in bpy.context.scene.objects if obj.type == 'LIGHT']
+            for light in lights:
+                if hasattr(light.data, 'use_shadow'):
+                    light.data.use_shadow = False
+                if hasattr(light.data, 'energy'):
+                    light.data.energy = 0.0
+
+            # Position 패스 활성화 (Mist Pass를 Position으로 활용)
+            view_layer = bpy.context.view_layer
+            try:
+                view_layer.use_pass_position = True
+            except Exception:
+                pass
+
+            # 컴포지터: Position -> Composite
+            prev_use_nodes = scene.use_nodes
+            scene.use_nodes = True
+            ntree = scene.node_tree
+            nodes = ntree.nodes
+            links = ntree.links
+            nodes.clear()
+
+            # Render Layers 노드
+            rl = nodes.new(type="CompositorNodeRLayers")
+
+            # Position output이 있으면 사용, 없으면 대체 방법
+            # EEVEE의 경우 Position pass를 직접 지원하지 않으므로 Object Coordinates를 사용
+            # 대신 Shader를 통한 Position 렌더링을 사용
+
+            # Composite 노드
+            comp = nodes.new(type="CompositorNodeComposite")
+            comp.location = (400, 0)
+
+            # 이미지 출력 연결
+            links.new(rl.outputs["Image"], comp.inputs["Image"])
+
+            # 이미지 설정
+            img_settings = scene.render.image_settings
+            prev_format = img_settings.file_format
+            prev_color_mode = img_settings.color_mode
+            prev_color_depth = img_settings.color_depth
+            prev_view_transform = scene.view_settings.view_transform
+
+            if USE_OPTIMIZED_FORMATS:
+                # Position은 EXR 형식으로 저장 (32비트 부동소수점)
+                img_settings.file_format = "OPEN_EXR"
+                img_settings.color_mode = "RGB"
+                img_settings.color_depth = "32"
+                file_ext = ".exr"
+            else:
+                # PNG로 저장
+                img_settings.file_format = "PNG"
+                img_settings.color_mode = "RGB"
+                img_settings.color_depth = "16"
+                file_ext = ".png"
+
+            scene.view_settings.view_transform = "Standard"
+
+            # 모든 메시 오브젝트의 bounding box 계산
+            mesh_objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+
+            # 전체 장면의 bounding box 계산
+            if mesh_objects:
+                # 첫 번째 오브젝트로 초기화
+                bbox_min = mathutils.Vector(mesh_objects[0].bound_box[0])
+                bbox_max = mathutils.Vector(mesh_objects[0].bound_box[6])
+
+                # 모든 메시의 bounding box 합치기
+                for mesh_obj in mesh_objects:
+                    for corner in mesh_obj.bound_box:
+                        world_corner = mesh_obj.matrix_world @ mathutils.Vector(corner)
+                        bbox_min.x = min(bbox_min.x, world_corner.x)
+                        bbox_min.y = min(bbox_min.y, world_corner.y)
+                        bbox_min.z = min(bbox_min.z, world_corner.z)
+                        bbox_max.x = max(bbox_max.x, world_corner.x)
+                        bbox_max.y = max(bbox_max.y, world_corner.y)
+                        bbox_max.z = max(bbox_max.z, world_corner.z)
+
+                # 범위 계산
+                bbox_range = bbox_max - bbox_min
+
+                print(f"  Position Map Range: min={bbox_min}, max={bbox_max}, range={bbox_range}")
+
+            # 모든 메시 오브젝트에 Position Shader 적용
+            prev_materials = {}
+            for mesh_obj in mesh_objects:
+                # 기존 재질 저장
+                prev_materials[mesh_obj.name] = mesh_obj.data.materials[:] if mesh_obj.data.materials else []
+
+                # 새 재질 생성 (Position을 RGB로 출력, 정규화)
+                mat = bpy.data.materials.new(name="PositionMaterial_Temp")
+                mat.use_nodes = True
+                nodes = mat.node_tree.nodes
+                links = mat.node_tree.links
+                nodes.clear()
+
+                # Geometry 노드 (Position 정보)
+                geom = nodes.new(type="ShaderNodeNewGeometry")
+                geom.location = (0, 0)
+
+                # Vector Math: Position - bbox_min
+                subtract = nodes.new(type="ShaderNodeVectorMath")
+                subtract.operation = "SUBTRACT"
+                subtract.location = (200, 0)
+                subtract.inputs[1].default_value = (bbox_min.x, bbox_min.y, bbox_min.z)
+
+                # Vector Math: (Position - bbox_min) / bbox_range
+                divide = nodes.new(type="ShaderNodeVectorMath")
+                divide.operation = "DIVIDE"
+                divide.location = (400, 0)
+                divide.inputs[1].default_value = (
+                    max(bbox_range.x, 0.001),  # 0으로 나누기 방지
+                    max(bbox_range.y, 0.001),
+                    max(bbox_range.z, 0.001)
+                )
+
+                # Emission 노드 (Position을 색상으로)
+                emission = nodes.new(type="ShaderNodeEmission")
+                emission.location = (600, 0)
+
+                # Material Output
+                output = nodes.new(type="ShaderNodeOutputMaterial")
+                output.location = (800, 0)
+
+                # 연결: Position -> Subtract -> Divide -> Emission -> Output
+                links.new(geom.outputs["Position"], subtract.inputs[0])
+                links.new(subtract.outputs[0], divide.inputs[0])
+                links.new(divide.outputs[0], emission.inputs["Color"])
+                links.new(emission.outputs["Emission"], output.inputs["Surface"])
+
+                # 메시에 재질 적용 (모든 슬롯에 동일한 재질 적용)
+                mesh_obj.data.materials.clear()
+                mesh_obj.data.materials.append(mat)
+
+            position_path = os.path.join(output_dir, f"{file_prefix}_{view_name}{file_ext}")
+            scene.render.filepath = position_path
+            bpy.ops.render.render(write_still=True, use_viewport=False)
+
+            # 재질 복구
+            for obj_name, mats in prev_materials.items():
+                obj = bpy.data.objects.get(obj_name)
+                if obj:
+                    obj.data.materials.clear()
+                    for mat in mats:
+                        obj.data.materials.append(mat)
+
+            # 임시 재질 삭제
+            for mat in bpy.data.materials:
+                if mat.name.startswith("PositionMaterial_Temp"):
+                    bpy.data.materials.remove(mat)
+
+            # 설정 복구
+            img_settings.file_format = prev_format
+            img_settings.color_mode = prev_color_mode
+            img_settings.color_depth = prev_color_depth
+            scene.view_settings.view_transform = prev_view_transform
+            scene.use_nodes = prev_use_nodes
+
     def _extract_camera_parameters(self, scene, camera_positions, target, output_base):
-        """카메라 파라미터 추출 및 JSON 저장 (Sequence 모드일 때만)"""
-        if not Sequence:
+        """카메라 파라미터 추출 및 JSON 저장 (Sequence == 1 또는 2 모드일 때)"""
+        if Sequence == 0:
             return
-            
+
         print("=== 카메라 파라미터 추출 시작 ===")
         
         # 카메라 파라미터 저장 디렉토리 생성
@@ -1009,7 +1305,17 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         resolution_y = scene.render.resolution_y
         pixel_aspect_x = scene.render.pixel_aspect_x
         pixel_aspect_y = scene.render.pixel_aspect_y
-        
+
+        # Sequence 모드에 따른 설명
+        if Sequence == 1:
+            sequence_mode_desc = "40 views (8x5 grid)"
+        elif Sequence == 2:
+            sequence_mode_desc = "6 views (front, sides, back, top, bottom)"
+        elif Sequence == 3:
+            sequence_mode_desc = "44 views (11x4 grid, azimuth 15deg intervals, 4 elevations)"
+        else:
+            sequence_mode_desc = "10 views (default)"
+
         # 카메라 데이터 배열
         views = []
         
@@ -1046,7 +1352,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 'resolution': [resolution_x, resolution_y],
                 'pixel_aspect': [pixel_aspect_x, pixel_aspect_y],
                 'convention': 'Blender (-Z forward, +Y up)',
-                'sequence_mode': True
+                'sequence_mode': Sequence,
+                'description': sequence_mode_desc
             },
             'views': views
         }
@@ -1153,6 +1460,21 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         else:
             return f"{minutes:02d}:{secs:02d}"
 
+    def _log_error(self, log_path, case_idx, case_name, error_msg, traceback_str):
+        """에러를 로그 파일에 기록"""
+        import datetime
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write("=" * 80 + "\n")
+            f.write(f"[{timestamp}] Case #{case_idx}: {case_name}\n")
+            f.write(f"Error: {error_msg}\n")
+            if traceback_str:
+                f.write("\nFull Traceback:\n")
+                f.write(traceback_str)
+            f.write("=" * 80 + "\n\n")
+
     def _show_completion_message(self, output_base):
         """완료 메시지 및 파일 탐색기 열기"""
         # 활성화된 렌더링 타입에 따른 완료 메시지 생성
@@ -1169,6 +1491,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             completed_dirs.append("normal")
         if RENDER_CURVATURE:
             completed_dirs.append("curvature")
+        if RENDER_POSITION:
+            completed_dirs.append("position")
 
         self.report(
             {"INFO"},
@@ -1189,6 +1513,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             first_active_dir = os.path.join(output_base, "normal")
         elif RENDER_CURVATURE:
             first_active_dir = os.path.join(output_base, "curvature")
+        elif RENDER_POSITION:
+            first_active_dir = os.path.join(output_base, "position")
         else:
             first_active_dir = output_base  # 기본 출력 폴더
 
