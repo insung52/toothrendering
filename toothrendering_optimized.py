@@ -17,7 +17,7 @@ intrinsic projection matrix, view matrix 총 5개
 '''
 
 # 설정 변수
-MAX_CASES = 5  # 처리할 최대 케이스 수
+MAX_CASES = 100  # 처리할 최대 케이스 수
 START_CASE = 1  # 시작 케이스 번호 (1부터 시작)
 Reverses = False  # 폴더 순서 역순 여부
 Sequence = 3 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40개), 2: 6개 각도, 3: 44개 각도 (11x4 grid)
@@ -30,8 +30,8 @@ Sequence = 3 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40�
 RENDER_LIT = False  # 라이팅 머티리얼 (Cycles)
 RENDER_UNLIT = False  # semantic map (EEVEE)
 RENDER_MATT = False  # 매트 머티리얼 (EEVEE)
-RENDER_DEPTH = False  # 뎁스 맵 (EEVEE)
-RENDER_NORMAL = False  # 노멀 맵 (EEVEE)
+RENDER_DEPTH = True  # 뎁스 맵 (EEVEE)
+RENDER_NORMAL = True  # 노멀 맵 (EEVEE)
 RENDER_CURVATURE = False  # 곡률 맵 (Cycles)
 RENDER_POSITION = True  # 포지션 맵 (EEVEE) - 3D 월드 좌표
 
@@ -737,6 +737,21 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         with open(json_file) as f:
             meta = json.load(f)
         labels = meta["labels"]
+
+        # 버텍스 개수와 라벨 개수 불일치 처리
+        if len(labels) != len(mesh.vertices):
+            print(f"  [WARNING] Label/Vertex mismatch: labels={len(labels)} vs vertices={len(mesh.vertices)}")
+
+            if len(labels) < len(mesh.vertices):
+                # 라벨이 부족한 경우: 0으로 패딩
+                labels = labels + [0] * (len(mesh.vertices) - len(labels))
+                print(f"  [WARNING] Padded {len(mesh.vertices) - len(labels)} labels with 0")
+            else:
+                # 라벨이 너무 많은 경우: 초과분 자르기
+                excess = len(labels) - len(mesh.vertices)
+                labels = labels[:len(mesh.vertices)]
+                print(f"  [WARNING] Truncated {excess} excess labels")
+
         for poly in mesh.polygons:
             face_labels = [labels[v] for v in poly.vertices]
             if all(l == 0 for l in face_labels):
@@ -783,16 +798,39 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         
         print(f"  Rendering {len(camera_data)} views × {len(render_configs)} types = {total_renders} images")
         
+        # Position 렌더링을 위한 BBox 미리 계산
+        position_bbox = None
+        if RENDER_POSITION:
+            mesh_objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+            if mesh_objects:
+                first_corner_world = mesh_objects[0].matrix_world @ mathutils.Vector(mesh_objects[0].bound_box[0])
+                bbox_min = mathutils.Vector(first_corner_world)
+                bbox_max = mathutils.Vector(first_corner_world)
+
+                for mesh_obj in mesh_objects:
+                    for corner in mesh_obj.bound_box:
+                        world_corner = mesh_obj.matrix_world @ mathutils.Vector(corner)
+                        bbox_min.x = min(bbox_min.x, world_corner.x)
+                        bbox_min.y = min(bbox_min.y, world_corner.y)
+                        bbox_min.z = min(bbox_min.z, world_corner.z)
+                        bbox_max.x = max(bbox_max.x, world_corner.x)
+                        bbox_max.y = max(bbox_max.y, world_corner.y)
+                        bbox_max.z = max(bbox_max.z, world_corner.z)
+
+                bbox_range = bbox_max - bbox_min
+                position_bbox = (bbox_min, bbox_max, bbox_range)
+                print(f"  Position BBox (pre-calculated): min={bbox_min}, max={bbox_max}, range={bbox_range}")
+
         # 렌더링 타입별 루프 (외부)
         for render_type_idx, render_config in enumerate(render_configs):
             render_type, output_dir, engine, mat_gum, mat_tooth, use_shadow, pass_type = render_config
-            
+
             print(f"  [{idx}/{MAX_CASES}] [{render_type_idx+1}/{len(render_configs)}] Starting {render_type.upper()} rendering ({engine})")
-            
+
             # 엔진 설정 (한 번만)
             scene.render.engine = engine
             scene.use_nodes = False
-            
+
             # 머티리얼 설정 (한 번만)
             if mat_gum and mat_tooth:
                 mesh.materials[0] = mat_gum
@@ -801,7 +839,7 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 mesh.materials[0] = materials['curvature']
                 if len(mesh.materials) > 1:
                     mesh.materials[1] = materials['curvature']
-            
+
             # 카메라별 루프 (내부)
             for view_idx, (view_name, cam_pos) in enumerate(camera_data):
                 # 카메라 생성
@@ -832,7 +870,7 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 
                 # 렌더링 실행
                 if render_type in ['depth', 'normal', 'position']:
-                    self._render_pass(scene, cam_obj, obj, pass_type, output_dir, file_prefix, view_name)
+                    self._render_pass(scene, cam_obj, obj, pass_type, output_dir, file_prefix, view_name, position_bbox)
                 else:
                     # 일반 렌더링
                     # 파일 형식 설정
@@ -913,8 +951,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         # 모든 모드에서 카메라 위치 그대로 사용
         return camera_positions
 
-    def _render_pass(self, scene, cam_obj, obj, pass_type, output_dir, file_prefix, view_name):
-        """패스 기반 렌더링 (depth, normal)"""
+    def _render_pass(self, scene, cam_obj, obj, pass_type, output_dir, file_prefix, view_name, position_bbox=None):
+        """패스 기반 렌더링 (depth, normal, position)"""
         if pass_type == 'depth':
             # EEVEE에서 depth pass 활성화
             scene.render.engine = "BLENDER_EEVEE_NEXT"
@@ -1186,32 +1224,14 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
 
             scene.view_settings.view_transform = "Standard"
 
-            # 모든 메시 오브젝트의 bounding box 계산
-            mesh_objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
+            # 미리 계산된 BBox 사용 (모든 뷰에서 동일한 범위 사용)
+            if position_bbox is None:
+                raise ValueError("Position bbox must be pre-calculated before rendering!")
 
-            # 전체 장면의 bounding box 계산
-            if mesh_objects:
-                # 첫 번째 오브젝트로 초기화
-                bbox_min = mathutils.Vector(mesh_objects[0].bound_box[0])
-                bbox_max = mathutils.Vector(mesh_objects[0].bound_box[6])
-
-                # 모든 메시의 bounding box 합치기
-                for mesh_obj in mesh_objects:
-                    for corner in mesh_obj.bound_box:
-                        world_corner = mesh_obj.matrix_world @ mathutils.Vector(corner)
-                        bbox_min.x = min(bbox_min.x, world_corner.x)
-                        bbox_min.y = min(bbox_min.y, world_corner.y)
-                        bbox_min.z = min(bbox_min.z, world_corner.z)
-                        bbox_max.x = max(bbox_max.x, world_corner.x)
-                        bbox_max.y = max(bbox_max.y, world_corner.y)
-                        bbox_max.z = max(bbox_max.z, world_corner.z)
-
-                # 범위 계산
-                bbox_range = bbox_max - bbox_min
-
-                print(f"  Position Map Range: min={bbox_min}, max={bbox_max}, range={bbox_range}")
+            bbox_min, bbox_max, bbox_range = position_bbox
 
             # 모든 메시 오브젝트에 Position Shader 적용
+            mesh_objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
             prev_materials = {}
             for mesh_obj in mesh_objects:
                 # 기존 재질 저장
