@@ -17,7 +17,7 @@ intrinsic projection matrix, view matrix 총 5개
 '''
 
 # 설정 변수
-MAX_CASES = 100  # 처리할 최대 케이스 수
+MAX_CASES = 10  # 처리할 최대 케이스 수
 START_CASE = 1  # 시작 케이스 번호 (1부터 시작)
 Reverses = False  # 폴더 순서 역순 여부
 Sequence = 3 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40개), 2: 6개 각도, 3: 44개 각도 (11x4 grid)
@@ -26,14 +26,16 @@ Sequence = 3 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40�
 # top -> left 15장, left -> bottom 15장, 총 30장의 이미지를 저장함.
 # 전체 사진들을 순서대로 이어서 보면 동영상처럼 카메라가 orbital 회전하는것처럼 구현해야함
 
+EXPORT_LIT = True # lit 머티리얼이 적용된 메시를 그대로 obj 파일로 따로 저장
+
 # 렌더링 타입별 활성화 설정
-RENDER_LIT = False  # 라이팅 머티리얼 (Cycles)
+RENDER_LIT = True  # 라이팅 머티리얼 (Cycles)
 RENDER_UNLIT = False  # semantic map (EEVEE)
 RENDER_MATT = False  # 매트 머티리얼 (EEVEE)
-RENDER_DEPTH = True  # 뎁스 맵 (EEVEE)
-RENDER_NORMAL = True  # 노멀 맵 (EEVEE)
+RENDER_DEPTH = False  # 뎁스 맵 (EEVEE)
+RENDER_NORMAL = False  # 노멀 맵 (EEVEE)
 RENDER_CURVATURE = False  # 곡률 맵 (Cycles)
-RENDER_POSITION = True  # 포지션 맵 (EEVEE) - 3D 월드 좌표
+RENDER_POSITION = False  # 포지션 맵 (EEVEE) - 3D 월드 좌표
 
 # 파일 형식 설정
 USE_OPTIMIZED_FORMATS = False  # True: WebP/EXR 등 최적 형식, False: 모두 PNG
@@ -768,7 +770,38 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
         
         # 카메라 위치들 생성 (Sequence 모드 처리 포함)
         camera_data = self._generate_camera_positions(camera_positions, target)
-        
+
+        # EXPORT_LIT 모드: lit 머티리얼 적용 후 OBJ 저장만 하고 렌더링 건너뛰기
+        if EXPORT_LIT:
+            print(f"  [EXPORT_LIT] Applying lit materials and exporting OBJ (skipping all rendering)")
+
+            # Lit 머티리얼 적용
+            mesh.materials[0] = materials['gum']
+            mesh.materials[1] = materials['tooth']
+
+            # OBJ 저장 경로 설정
+            lit_obj_dir = os.path.join(output_base, "lit_obj")
+            os.makedirs(lit_obj_dir, exist_ok=True)
+            lit_obj_path = os.path.join(lit_obj_dir, f"{file_prefix}_lit.obj")
+
+            # OBJ 내보내기
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            bpy.context.view_layer.objects.active = obj
+
+            bpy.ops.wm.obj_export(
+                filepath=lit_obj_path,
+                export_selected_objects=True,
+                export_materials=True,
+                export_uv=True,
+                export_normals=True,
+                export_triangulated_mesh=False
+            )
+
+            print(f"  [EXPORT_LIT] Exported: {lit_obj_path}")
+            print(f"[{idx}/{MAX_CASES}] Completed: {file_prefix} (EXPORT_LIT mode)")
+            return 0  # 렌더링 건너뛰고 함수 종료 (렌더링 카운트 0 반환)
+
         # 렌더링 타입별 디렉토리 매핑
         render_configs = []
         if RENDER_UNLIT:
