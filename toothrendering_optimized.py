@@ -17,16 +17,27 @@ intrinsic projection matrix, view matrix 총 5개
 '''
 
 # 설정 변수
-MAX_CASES = 10  # 처리할 최대 케이스 수
+MAX_CASES = 1  # 처리할 최대 케이스 수
 START_CASE = 1  # 시작 케이스 번호 (1부터 시작)
 Reverses = False  # 폴더 순서 역순 여부
-Sequence = 3 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40개), 2: 6개 각도, 3: 44개 각도 (11x4 grid)
+Sequence = 4 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40개), 2: 6개 각도, 3: 44개 각도 (11x4 grid)
+
+'''
+ring1 (top-ish) : elevation +30도 -> 좌우 360도 회전하면서 12개 view
+ring2 (mid) : elevation 0도 -> 좌우 360도 회전하면서 18개 view
+ring3 (bottom-ish) : elevation -30도 -> 좌우 360도 회전하면서 12개 view
+ring4 : + 정면에서 elevation +60도 -> -60도 회전하면서 10개 view
+ring5 : + elevation +90도 -90도 각각 1개씩 총 2개 view
+총 54개의 view
+
+각각 이미지 이름은  lit_ring1_00001.png, unlit_ring2_00002.png, ... 식으로 저장
+'''
 # Sequence = 1 모드: 8×5=40개 카메라 각도 생성
 # top -> left -> bottom 3개의 기존 카메라 각도를 키프레임으로 사용
 # top -> left 15장, left -> bottom 15장, 총 30장의 이미지를 저장함.
 # 전체 사진들을 순서대로 이어서 보면 동영상처럼 카메라가 orbital 회전하는것처럼 구현해야함
 
-EXPORT_LIT = True # lit 머티리얼이 적용된 메시를 그대로 obj 파일로 따로 저장
+EXPORT_LIT = False # lit 머티리얼이 적용된 메시를 그대로 obj 파일로 따로 저장
 
 # 렌더링 타입별 활성화 설정
 RENDER_LIT = True  # 라이팅 머티리얼 (Cycles)
@@ -224,18 +235,124 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
                 # 그 다음 Azimuth 회전 (Z축 중심) - 좌우 각도
                 for azim_idx, azimuth in enumerate(azimuths):
                     if azimuth == 0:
-                        final_vec = vec_after_elevation
+                        rotated_vec = vec_after_elevation
                     else:
                         azimuth_rotation = mathutils.Matrix.Rotation(math.radians(azimuth), 3, 'Z')
-                        final_vec = azimuth_rotation @ vec_after_elevation
+                        rotated_vec = azimuth_rotation @ vec_after_elevation
 
                     # 정규화
-                    final_vec = final_vec.normalized()
-                    cam_pos = target + final_vec * distance
+                    rotated_vec = rotated_vec.normalized()
+                    cam_pos = target + rotated_vec * distance
 
-                    # 파일명 생성: azim_XX_elev_YY
-                    name = f"azim_{azimuth:+04d}_elev_{elevation:+03d}"
+                    # 파일명 생성
+                    name = f"elev{elevation:+03d}_azim{azimuth:+03d}"
                     camera_positions.append((name, cam_pos))
+
+        elif Sequence == 4:
+            # Sequence 4 모드: 54개 카메라 각도 (5개 ring)
+            camera_positions = []
+
+            # 기본 벡터 (0, -1, 0) - 정면
+            base_vec = mathutils.Vector((0, -1, 0))
+
+            # Ring 1: elevation +30°, azimuth 360° (12개, 30° 간격)
+            elevation1 = 30
+            azimuths1 = [i * 30 for i in range(12)]  # 0°, 30°, 60°, ..., 330°
+
+            ring1_count = 0
+            for azimuth in azimuths1:
+                # Elevation 회전 (X축 중심)
+                elevation_rotation = mathutils.Matrix.Rotation(math.radians(elevation1), 3, 'X')
+                vec_after_elevation = elevation_rotation @ base_vec
+
+                # Azimuth 회전 (Z축 중심)
+                azimuth_rotation = mathutils.Matrix.Rotation(math.radians(azimuth), 3, 'Z')
+                rotated_vec = azimuth_rotation @ vec_after_elevation
+
+                # 정규화
+                rotated_vec = rotated_vec.normalized()
+                cam_pos = target + rotated_vec * distance
+                ring1_count += 1
+                camera_positions.append((f"ring1_{ring1_count:05d}", cam_pos))
+
+            # Ring 2: elevation 0°, azimuth 360° (18개, 20° 간격)
+            elevation2 = 0
+            azimuths2 = [i * 20 for i in range(18)]  # 0°, 20°, 40°, ..., 340°
+
+            ring2_count = 0
+            for azimuth in azimuths2:
+                # Elevation 회전 (0°이므로 생략)
+                vec_after_elevation = base_vec
+
+                # Azimuth 회전 (Z축 중심)
+                azimuth_rotation = mathutils.Matrix.Rotation(math.radians(azimuth), 3, 'Z')
+                rotated_vec = azimuth_rotation @ vec_after_elevation
+
+                # 정규화
+                rotated_vec = rotated_vec.normalized()
+                cam_pos = target + rotated_vec * distance
+                ring2_count += 1
+                camera_positions.append((f"ring2_{ring2_count:05d}", cam_pos))
+
+            # Ring 3: elevation -30°, azimuth 360° (12개, 30° 간격)
+            elevation3 = -30
+            azimuths3 = [i * 30 for i in range(12)]  # 0°, 30°, 60°, ..., 330°
+
+            ring3_count = 0
+            for azimuth in azimuths3:
+                # Elevation 회전 (X축 중심)
+                elevation_rotation = mathutils.Matrix.Rotation(math.radians(elevation3), 3, 'X')
+                vec_after_elevation = elevation_rotation @ base_vec
+
+                # Azimuth 회전 (Z축 중심)
+                azimuth_rotation = mathutils.Matrix.Rotation(math.radians(azimuth), 3, 'Z')
+                rotated_vec = azimuth_rotation @ vec_after_elevation
+
+                # 정규화
+                rotated_vec = rotated_vec.normalized()
+                cam_pos = target + rotated_vec * distance
+                ring3_count += 1
+                camera_positions.append((f"ring3_{ring3_count:05d}", cam_pos))
+
+            # Ring 4: elevation +60° to -60° (10개, 12° 간격), azimuth 0° (정면)
+            azimuth4 = 0
+            elevations4 = [60 - i * 12 for i in range(10)]  # 60°, 48°, 36°, ..., -60°
+
+            ring4_count = 0
+            for elevation in elevations4:
+                # Elevation 회전 (X축 중심)
+                elevation_rotation = mathutils.Matrix.Rotation(math.radians(elevation), 3, 'X')
+                vec_after_elevation = elevation_rotation @ base_vec
+
+                # Azimuth 회전 (Z축 중심)
+                azimuth_rotation = mathutils.Matrix.Rotation(math.radians(azimuth4), 3, 'Z')
+                rotated_vec = azimuth_rotation @ vec_after_elevation
+
+                # 정규화
+                rotated_vec = rotated_vec.normalized()
+                cam_pos = target + rotated_vec * distance
+                ring4_count += 1
+                camera_positions.append((f"ring4_{ring4_count:05d}", cam_pos))
+
+            # Ring 5: elevation +90°, -90° (2개), azimuth 90°
+            azimuth5 = 90
+            elevations5 = [90, -90]
+
+            ring5_count = 0
+            for elevation in elevations5:
+                # Elevation 회전 (X축 중심)
+                elevation_rotation = mathutils.Matrix.Rotation(math.radians(elevation), 3, 'X')
+                vec_after_elevation = elevation_rotation @ base_vec
+
+                # Azimuth 회전 (Z축 중심)
+                azimuth_rotation = mathutils.Matrix.Rotation(math.radians(azimuth5), 3, 'Z')
+                rotated_vec = azimuth_rotation @ vec_after_elevation
+
+                # 정규화
+                rotated_vec = rotated_vec.normalized()
+                cam_pos = target + rotated_vec * distance
+                ring5_count += 1
+                camera_positions.append((f"ring5_{ring5_count:05d}", cam_pos))
         else:  # Sequence == 0
             # 기존 모드: 10개 카메라 각도 사용
             camera_configs = [
@@ -297,6 +414,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             camera_count = 6
         elif Sequence == 3:
             camera_count = 44
+        elif Sequence == 4:
+            camera_count = 54
         else:  # Sequence == 0
             camera_count = 10
         total_renders_all_models = total * active_render_types * camera_count
@@ -1366,6 +1485,8 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             sequence_mode_desc = "6 views (front, sides, back, top, bottom)"
         elif Sequence == 3:
             sequence_mode_desc = "44 views (11x4 grid, azimuth 15deg intervals, 4 elevations)"
+        elif Sequence == 4:
+            sequence_mode_desc = "54 views (5 rings: top-ish, mid, bottom-ish, elevation sweep, poles)"
         else:
             sequence_mode_desc = "10 views (default)"
 
