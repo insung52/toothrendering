@@ -20,7 +20,7 @@ intrinsic projection matrix, view matrix 총 5개
 MAX_CASES = 1  # 처리할 최대 케이스 수
 START_CASE = 1  # 시작 케이스 번호 (1부터 시작)
 Reverses = False  # 폴더 순서 역순 여부
-Sequence = 4 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40개), 2: 6개 각도, 3: 44개 각도 (11x4 grid)
+Sequence = 0 # 0: 기존 10개 카메라 각도, 1: 연속 카메라 각도 (40개), 2: 6개 각도, 3: 44개 각도 (11x4 grid)
 
 '''
 ring1 (top-ish) : elevation +30도 -> 좌우 360도 회전하면서 12개 view
@@ -40,8 +40,8 @@ ring5 : + elevation +90도 -90도 각각 1개씩 총 2개 view
 EXPORT_LIT = False # lit 머티리얼이 적용된 메시를 그대로 obj 파일로 따로 저장
 
 # 렌더링 타입별 활성화 설정
-RENDER_LIT = True  # 라이팅 머티리얼 (Cycles)
-RENDER_UNLIT = False  # semantic map (EEVEE)
+RENDER_LIT = False  # 라이팅 머티리얼 (Cycles)
+RENDER_UNLIT = True  # semantic map (EEVEE)
 RENDER_MATT = False  # 매트 머티리얼 (EEVEE)
 RENDER_DEPTH = False  # 뎁스 맵 (EEVEE)
 RENDER_NORMAL = False  # 노멀 맵 (EEVEE)
@@ -1459,9 +1459,7 @@ class OT_SelectFolderAndColorize(bpy.types.Operator):
             scene.use_nodes = prev_use_nodes
 
     def _extract_camera_parameters(self, scene, camera_positions, target, output_base):
-        """카메라 파라미터 추출 및 JSON 저장 (Sequence == 1 또는 2 모드일 때)"""
-        if Sequence == 0:
-            return
+        """카메라 파라미터 추출 및 JSON 저장"""
 
         print("=== 카메라 파라미터 추출 시작 ===")
         
